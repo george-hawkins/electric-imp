@@ -1,6 +1,6 @@
 electric-imp
 ============
 
-Subproject:
+Subprojects:
 
-geolocation - determine the location of your Imp using imp.scanwifinetworks() and the Google location service.
+* geolocation - determine the location of your Imp using imp.scanwifinetworks() and the Google location service.
