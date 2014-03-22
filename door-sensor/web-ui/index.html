@@ -19,6 +19,8 @@
       <script src="https://oss.maxcdn.com/libs/respond.js/1.4.2/respond.min.js"></script>
     <![endif]-->
 
+    <!-- Rickshaw chart -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/rickshaw/1.4.6/rickshaw.min.css">
 <style>
 html,
 body {
@@ -46,6 +48,17 @@ body {
   height:100%;
   margin:0;
 }
+span.glyphicon-ok-sign {
+    color: green;
+}
+span.glyphicon-exclamation-sign {
+    color: red;
+}
+.door-state {
+    margin-top: 8px;
+    margin-left: 15px;
+    font-size: 32px;
+}
 </style>
 
   </head>
@@ -62,20 +75,28 @@ body {
             <span class="icon-bar"></span>
             <span class="icon-bar"></span>
           </button>
-          <a class="navbar-brand" href="#">0.0V (0 secs)</a>
+          <a class="navbar-brand" href="#"><span id="voltage">0.0</span>V (<span id="expired">0 secs</span>)</a>
         </div>
         <div class="collapse navbar-collapse">
           <ul class="nav navbar-nav">
-            <li class="active"><a href="#">Alerts</a></li>
-            <li><a href="#about">Light</a></li>
-            <li><a href="#contact">Sound</a></li>
+            <li class="dropdown">
+              <a href="#" class="dropdown-toggle" data-toggle="dropdown">Time <b class="caret"></b></a>
+              <ul class="dropdown-menu">
+                <li><a id="time-1hour" href="#">1 hour</a></li>
+                <li><a id="time-6hour" href="#">6 hours</a></li>
+              </ul>
+            </li>
+            <li><a id="btn-alerts" href="#">Alerts</a></li>
+            <li><a id="btn-light" href="#">Light</a></li>
+            <li><a id="btn-sound" href="#">Sound</a></li>
             <li class="dropdown">
               <a href="#" class="dropdown-toggle" data-toggle="dropdown">Location <b class="caret"></b></a>
               <ul class="dropdown-menu">
-                <li><a href="#">Map</a></li>
-                <li><a href="#">Update</a></li>
+                <li><a id="location-map" href="#">Map</a></li>
+                <li><a id="location-update" href="#">Update</a></li>
               </ul>
             </li>
+            <li><span class="door-state glyphicon glyphicon-ok-sign"></span><span class="door-state glyphicon glyphicon-exclamation-sign"></span></li>
           </ul>
         </div><!--/.nav-collapse -->
       </div>
@@ -95,11 +116,15 @@ body {
     <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/3.4.2/d3.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/rickshaw/1.4.6/rickshaw.min.js"></script>
 
+    <!-- Xively -->
+    <script src="http://d23cj0cdvyoxg0.cloudfront.net/xivelyjs-1.0.4.min.js"></script>
+
 <script>
 (function ($) {
   var prevChartWidth = 0
   var prevChartHeight = 0;
 
+  // Derived from http://www.triballabs.net/2013/02/the-basics-of-responsive-d3-charts/
   function updateChart(init)
   {
     var chart = $('#chart');
@@ -123,17 +148,153 @@ body {
     }, 100);
   }
 
-    var data = [ { x: 0, y: 40 }, { x: 1, y: 49 }, { x: 2, y: 17 }, { x: 3, y: 42 } ];
+    function createGraph(selector, data) {
 
-    var graph = new Rickshaw.Graph( {
-        element: document.querySelector("#chart"),
-        series: [ {
-            color: 'steelblue',
-            data: data
-        } ]
-    } );
+    // Build Graph
+    var graph = new Rickshaw.Graph({
+        element: document.querySelector(selector),
+        min: -0.1,
+        max: 1.1,
+        interpolation: 'linear', // See https://github.com/shutterstock/rickshaw#interpolation
+            series: [ {
+                color: '#BFBFBF',
+                data: data
+            } ]
+    });
 
-    graph.render();
+    // Define and render X axis (time values).
+    new Rickshaw.Graph.Axis.Time({ graph: graph, });
+
+    // Define and render Y axis (datastream values).
+    new Rickshaw.Graph.Axis.Y({
+        graph: graph,
+        tickFormat: function (y) {
+            if (y == 1) return 'Open';
+            else if (y == 0) return 'Closed';
+            else return null;
+        }
+    });
+
+    // Enable datapoint hover values.
+    new Rickshaw.Graph.HoverDetail({
+        graph: graph,
+        formatter: function (series, x, y) {
+            return y > 0.5 ? 'Open' : 'Closed';
+        }
+    });
+
+        graph.render();
+
+        return graph;
+    };
+
+    function getOpenClose(value) {
+        return value == 1 ? 0.9 : 0.1;
+    }
+
+    function liveUpdate(feedId, datastreamId, graph, points) {
+        xively.datastream.subscribe(feedId, datastreamId, function (event, datapoint) {
+            points.push({
+                x: new Date(datapoint.at).getTime() / 1000.0,
+                y: getOpenClose(datapoint.current_value)
+            });
+            graph.update();
+        });
+    }
+
+    var graph;
+
+    var key = 'TpAfHAI6zIWrp7Zx42RCGBxP2whEln9cyKgq4wejHLJirknv'; // Xively API key.
+    var feedId = '1326600967';
+    var sensorStateId = 'sensorState';
+    var voltagePingId = 'voltagePing';
+
+    xively.setKey(key);
+
+    xively.datastream.get(feedId, sensorStateId, function(datastream) {
+        xively.datastream.history(feedId, datastream.id, {
+                duration: '6hours',
+                interval: 0,
+                end: datastream.at
+            }, function(data) {
+                var points = [];
+                data.datapoints.forEach(function(datapoint) {
+                    points.push({
+                        x: new Date(datapoint.at).getTime() / 1000.0,
+                        y: getOpenClose(datapoint.value)
+                    });
+                });
+                graph = createGraph('#chart', points);
+
+                liveUpdate(feedId, datastream.id, graph, points);
+            });
+    });
+
+    var expiredTimer;
+    var lastUpdate;
+
+    function getExpiredTime() {
+        var diff = (new Date().getTime() - lastUpdate) / 1000;
+
+        // A negative time can result from slight differences between Imp and browser time.
+        return diff < 0 ? 0 : diff;
+    }
+
+    function scheduleExpired() {
+        var diff = getExpiredTime();
+        var secs = diff > 60 ? 60 : 10;
+
+        expiredTimer = setTimeout(function()
+        {
+            setExpired(diff + secs);
+            scheduleExpired();
+        }, secs * 1000);
+    }
+
+    function toFixed(value, precision) {
+        var power = Math.pow(10, precision || 0);
+        return String(Math.round(value * power) / power);
+    }
+
+    function setExpired(secs) {
+        var value = (secs < 60) ? Math.round(secs) + ' secs' : Math.round(secs / 60) + ' mins';
+
+        $('#expired').html(value);
+    }
+
+    function updateVoltage(update) {
+        $('#voltage').html(toFixed(update.current_value, 2));
+
+        lastUpdate = Date.parse(update.at);
+
+        setExpired(getExpiredTime());
+
+        clearTimeout(expiredTimer);
+        scheduleExpired();
+    }
+
+    xively.datastream.get(feedId, voltagePingId, function(datastream) {
+        updateVoltage(datastream);
+        xively.datastream.subscribe(feedId, datastream.id, function(event, datastream) {  
+            updateVoltage(datastream);
+        });
+    })
+
+    function addClick(selector) {
+        $(selector).click(function () {
+            console.log(selector + ' clicked');
+        });
+    }
+
+    addClick('#time-1hour');
+    addClick('#time-6hour');
+    addClick('#btn-alerts');
+    addClick('#btn-light');
+    addClick('#btn-sound');
+    addClick('#location-update');
+
+    $('#location-map').attr('href', 'http://maps.google.com/maps?q=loc:47.3669,8.52077');
+
 })(jQuery);
 </script>
 
