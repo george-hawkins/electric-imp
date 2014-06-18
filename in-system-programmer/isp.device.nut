@@ -1,4 +1,4 @@
-// TODO: pull together this, IntelHexParser and SpiProgrammer.
+// TODO: add in SpiProgrammer.
 
 // Tables don't support plus or append(...).
 function merge(src, dest) {
@@ -8,7 +8,7 @@ function merge(src, dest) {
 }
 
 function getSignature() {
-    return [ 0x1e, 0x93, 0x07 ];
+    return [ 0x1e, 0x94, 0x03 ];
 }
 
 function getFuses() {
@@ -38,6 +38,26 @@ function uploadHex(data) {
     // to avoid sending them back in the response.
     local hexData = delete data.hexData;
     local part = delete data.part;
+    
+    decodeProgram(hexData);
+}
+
+function decodeProgram(program) {
+    server.log("Info: free memory=" + imp.getmemoryfree() + "B");
+    
+    local count = 0;
+    
+    while (!program.eos()) {
+        local addr = program.readn('w');
+        local type = program.readn('b');
+        local len = program.readn('b');
+        if (len > 0) {
+            local data = program.readblob(len);
+        }
+        count++;
+    }
+    
+    server.log("Info: read " + count + " program lines");
 }
 
 function handleActionSendImpl(data) {
