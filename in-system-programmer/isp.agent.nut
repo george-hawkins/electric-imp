@@ -148,7 +148,9 @@ class SignatureContext extends Context {
     }
 }
 
-class PartContext extends Context {
+// First we get the signature so we can request and submit the part with
+// the sending of the real upload context in the handleSuccess(...) logic.
+class UploadHexPartContext extends Context {
     uploadHexData = null
     constructor(_response, _data) {
         base.constructor(GET_SIGNATURE_ACTION, _response);
@@ -204,9 +206,7 @@ function handleAction(action, request, response) {
             context = Context(action, response, getSetLockBitsParam(request));
             break;
         case UPLOAD_HEX_ACTION:
-            local data = getUploadHexParam(request);
-            context = "part" in data ?
-                Context(action, response, data) : PartContext(response, data);
+            context = UploadHexPartContext(response, getUploadHexParam(request));
             break;
         default:
             context = Context(action, response);
@@ -460,52 +460,3 @@ function parseMultipart(req) {
 // -----------------------------------------------------------------------------
 // End - Multipart form data library
 // -----------------------------------------------------------------------------
-
-// Check these two UploadHexContext implementations (alternatives to using
-// PartContext) into Git just for a memory of an alternative way of doing things.
-// Then remove them.
-//
-// class UploadHexContext extends Context {
-//     constructor(_action, _response, _data = {}) {
-//         base.constructor(_action, _response, _data);
-//        
-//         if (!hasPart()) {
-//             data.action = GET_SIGNATURE_ACTION;
-//         }
-//     }
-//    
-//     function handleSuccess(_data) {
-//         if (hasPart()) {
-//             base.handleSuccess(_data);
-//         } else {
-//             data.action = UPLOAD_HEX_ACTION;
-//             data.part <- getPart(_data.signature);
-//             ::send(this);
-//         }
-//     }
-//
-//     function hasPart() { return "part" in data; }
-// }
-//
-// class UploadHexContext extends Context {
-//     function send() {
-//         if ("part" in data) {
-//             base.send();
-//         } else {
-//             ::send(partContext(response, this));
-//         }
-//     }
-//
-//     partContext = class extends Context {
-//         parent = null
-//         constructor(response, _parent) {
-//             base.constructor(GET_SIGNATURE_ACTION, response);
-//             parent = _parent;
-//         }
-//    
-//         function handleSuccess(data) {
-//             parent.data.part <- getPart(data.signature);
-//             parent.send();
-//         }
-//     }
-// }

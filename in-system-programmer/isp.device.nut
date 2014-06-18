@@ -1,27 +1,65 @@
 // TODO: pull together this, IntelHexParser and SpiProgrammer.
 
+// Tables don't support plus or append(...).
+function merge(src, dest) {
+    foreach (slot, value in src) {
+        dest[slot] <- value;
+    }
+}
+
+function getSignature() {
+    return [ 0x1e, 0x93, 0x07 ];
+}
+
+function getFuses() {
+    return {
+        lfuse = 0x62
+        hfuse = 0xdf
+        efuse = 0xff
+    };
+}
+
+function setFuses(data) {
+    local lfuse = data.lfuse;
+    local hfuse = data.hfuse;
+    local efuse = data.efuse;
+}
+
+function getLockBits() {
+    return 0xff;
+}
+
+function setLockBits(data) {
+    local lockBits = data.lockBits;
+}
+
+function uploadHex(data) {
+    // Unlike elsewhere the items, due to their size, are deleted in order
+    // to avoid sending them back in the response.
+    local hexData = delete data.hexData;
+    local part = delete data.part;
+}
+
 function handleActionSendImpl(data) {
     try {
         switch (data.action) {
         case "getSignature":
-            data.signature <- [ 0x1e, 0x93, 0x07 ];
+            data.signature <- getSignature();
             break;
         case "getFuses":
-            data.lfuse <- 0x62;
-            data.hfuse <- 0xdf;
-            data.efuse <- 0xff;
+            merge(getFuses(), data);
             break;
         case "setFuses":
+            setFuses(data);
             break;
         case "getLockBits":
-            data.lockBits <- 0xff;
+            data.lockBits <- getLockBits();
             break;
         case "setLockBits":
+            setLockBits(data);
             break;
         case "uploadHex":
-            // Large items are deleted to avoid sending them in response.
-            local hexData = delete data.hexData;
-            local part = delete data.part;
+            uploadHex(data);
             break;
         case "test":
             handleActionSend = testHandleActionSendImpl;
