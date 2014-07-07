@@ -1,3 +1,19 @@
+/**
+ * Copyright 2014 George C. Hawkins
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+ 
 // Tables don't support plus or append(...).
 function merge(src, dest) {
     foreach (slot, value in src) {
@@ -9,10 +25,14 @@ function setFuses(data) {
     local lfuse = data.lfuse;
     local hfuse = data.hfuse;
     local efuse = data.efuse;
+    
+    programmer.setFuses(lfuse, hfuse, efuse);
 }
 
 function setLockBits(data) {
     local lockBits = data.lockBits;
+    
+    programmer.setLock(lockBits);
 }
 
 function uploadHex(data) {
@@ -74,7 +94,7 @@ function testHandleActionSendImpl(data) {
     }
 }
 
-// A HEX blob can eat up the Imp's memory - log free memory to spot issues.
+// A HEX blob can eat up the Imp's memory - log free memory every so often to spot issues.
 function showMemory() {
     server.log("Info: free memory=" + imp.getmemoryfree() + "B");
 }
@@ -88,30 +108,149 @@ agent.on("actionSend", dispatchActionSend);
 // -----------------------------------------------------------------------------
 // Start - In-System Programmer library
 // -----------------------------------------------------------------------------
+class Fuses {
+    WRITE_LOCK  = 0xACE00000;
+    WRITE_LFUSE = 0xACA00000;
+    WRITE_HFUSE = 0xACA80000;
+    WRITE_EFUSE = 0xACA40000;
+    READ_LOCK   = 0x58000000;
+    READ_LFUSE  = 0x50000000;
+    READ_HFUSE  = 0x58080000;
+    READ_EFUSE  = 0x50080000;
+    
+    // http://sourceforge.net/p/ethernut/code/5726/tree/trunk/nut/dev/avrtarget.c
+    // Oddly Nut don't consider DWEN dangerous. It's added here as it disables ISP.
+    // These values are appropriates for many AVR MCUs but aren't universal.
+    NEVER_PROG = {
+        lfuse = 0x62 // 0110 0010 CKOUT, SUT1 / CKSEL1
+        hfuse = 0xC0 // 1100 0000 RSTDISBL, DWEN
+        efuse = 0xF8 // 1111 1000 unused bits
+    };
+    ALWAYS_PROG = {
+        lfuse = 0x1D // 0001 1101 SUT0 / CKSEL3, CKSEL2, CKSEL0
+        hfuse = 0x20 // 0010 0000 SPIEN
+        efuse = 0x00 // 0000 0000
+    }
+    // SAFE = {
+    //   1000 0000 CKDIV8
+    //   0101 1111 WDTON / EESAVE, varies
+    //   0000 0111 varies
+    // }
+    spi = null;
+
+    constructor(_spi) {
+        spi = _spi;
+    }
+    
+    function spiTransaction(i, offset = 3) {
+        local out = blob(4);
+        
+        out.writen(i, 'i');
+        out.swap4();
+        
+        server.log(format("0x%02x%02x%02x%02x", out[3], out[2], out[1], out[0]));
+        
+        return spi.writeread(out)[offset];
+    }
+
+    function readLfuse() {
+        return spiTransaction(READ_LFUSE);
+    }
+    
+    function readHfuse() {
+        return spiTransaction(READ_HFUSE);
+    }
+    
+    function readEfuse() {
+        return spiTransaction(READ_EFUSE);
+    }
+    
+    function readLock() {
+        return spiTransaction(READ_LOCK);
+    }
+    
+    // TODO: remove/merge with other one.
+    function pollUntilReady() {
+        local POLL_READY = 0xF0000000;
+        local count = 1;
+        local start = hardware.micros();
+        
+        // TODO: some MCUs apparently don't support POLL_READY. The families containing
+        // the 328 and the ATtinyX5s both support POLL_READY. To check for a different
+        // family look for the "Serial Programming Instruction Set" table in the MCUs
+        // datasheet - one should find Poll RDY. If not one should simply wait here for
+        // the time given for WD_FLASH in the datasheet. Nick Gammon waits 10ms in
+        // https://github.com/nickgammon/arduino_sketches/blob/master/Atmega_Board_Programmer/Atmega_Board_Programmer.ino
+        while ((spiTransaction(POLL_READY) & 0x01) != 0x00) {
+            count++;
+        }
+        
+        local diff = hardware.micros() - start;
+        server.log("Info: polled " + count + " times over " + diff + "us");
+    }
+
+    function writeFuse(instruction, value) {
+        spiTransaction(instruction | value);
+        pollUntilReady();
+    }
+    
+    function writeSafeFuse(name, instruction, value) {
+        local check = (value | NEVER_PROG[name]) & ~ALWAYS_PROG[name];
+        
+        // If you know better then override this check.
+        if (value != check)
+            throw value + " is not safe for " + name;
+
+        writeFuse(instruction, value);
+    }
+    
+    function writeLfuse(value) {
+        writeSafeFuse("lfuse", WRITE_LFUSE, value);
+    }
+    
+    function writeHfuse(value) {
+        writeSafeFuse("hfuse", WRITE_HFUSE, value);
+    }
+    
+    function writeEfuse(value) {
+        writeSafeFuse("efuse", WRITE_EFUSE, value);
+    }
+    
+    function writeLock(value) {
+        if ((value & ~readLock()) != 0) {
+            throw "programmed lock bits can only be reset with chip erase";
+            // The simplest way to erase the chip is to upload an image.
+        }
+        writeFuse(WRITE_LOCK, value);
+    }
+}
+
 class InSystemProgrammer {
     SPICLK = 250; // 250KHz - slow enough for processors like the ATtiny.
-    PROGRAM_ENABLE = "\xAC\x53";
+    PROGRAM_ENABLE = 0xAC;
+    PROGRAM_ACK = 0x53;
     READ_SIGNATURE = 0x30;
-    READ_LOW_FUSE = 0x50;
-    READ_EXTENDED_FUSE = "\x50\x08";
-    READ_HIGH_FUSE = "\x58\x08";
+    READ_LFUSE = 0x50;
+    READ_EFUSE = "\x50\x08";
+    READ_HFUSE = "\x58\x08";
     READ_LOCK = 0x58;
+    CHIP_ERASE = 0x80;
     
     HEX_TYPE_END = 0x01;
 
     spi = null;
-    sclk = null;
-    mosi = null;
-    miso = null;
     reset = null;
+    fuses = null;
 
     constructor() {
-        // For unknown reasons these pins must be configured before spi.
-        // Configure spi first and we cannot enter programming mode.
-        sclk.configure(DIGITAL_OUT);
-        mosi.configure(DIGITAL_OUT);
+        fuses = Fuses(spi);
+        
         reset.configure(DIGITAL_OUT);
         
+        // Reset is held low during programming - so set it high initially to
+        // leave chip to run as normal.
+        reset.write(1);
+            
         // I've confirmed MSB_FIRST and CLOCK_IDLE_LOW are the values used by the Arduino programmer by
         // printing out SPCR and decoding it using http://avrbeginners.net/architecture/spi/spi.html
         local speed = spi.configure((MSB_FIRST | CLOCK_IDLE_LOW), SPICLK);
@@ -122,11 +261,17 @@ class InSystemProgrammer {
     function run(action) {
         startProgramming();
         
-        local result = action();
-
-        endProgramming();
-        
-        return result;
+        try {
+            local result = action();
+    
+            endProgramming();
+            
+            return result;
+        } catch (ex) {
+            endProgramming();
+            
+            throw ex;
+        }
     }
     
     function getSignature() {
@@ -144,19 +289,34 @@ class InSystemProgrammer {
     function getFuses() {
         return run(function() {
             return {
-                lfuse = program(READ_LOW_FUSE)
-                hfuse = program2(READ_HIGH_FUSE)
-                efuse = program2(READ_EXTENDED_FUSE)
+                lfuse = fuses.readLfuse()
+                hfuse = fuses.readHfuse()
+                efuse = fuses.readEfuse()
             };
         });
     }
     
     function getLockBits() {
         return run(function() {
-            return program(READ_LOCK);
+            return fuses.readLock();
         });
     }
     
+    function setFuses(lfuse, hfuse, efuse) {
+        run(function() {
+            fuses.writeLfuse(lfuse)
+            fuses.writeHfuse(hfuse)
+            fuses.writeEfuse(efuse)
+        });
+    }
+
+    // TODO: standardize on one of set/write, get/read, lock/lockBits, sketch/image/HexData   
+    function setLock(lock) {
+        run(function() {
+           fuses.writeLock(lock);
+        });
+    }
+
     function uploadHex(part, hexData) {
         return run(function() {
             local chipSize = part.memories.flash.size;
@@ -165,31 +325,49 @@ class InSystemProgrammer {
             
             chipErase();
 
-            server.log("pagesize=" + part.memories.flash.page_size);    
-            local pagemask = ~(page.len() - 1);
-            server.log(format("mask 0x%04x", pagemask));
-            local oldM = 0;
-            local oldAddr = 0;
-
-            for (local i = 0; i < 0x400; i++) {
-                local thisM = i & pagemask;
-                
-                if (thisM != oldM) {
-                    server.log(format("commit 0x%04x 0x%04x", oldAddr, oldM));
-                    oldAddr = i;
-                    oldM = thisM;
-                }
-            }
-            
             while (pageAddr < chipSize) {
                 if (readPage(hexData, pageAddr, page)) {
-//                    flashPage(pageAddr, page);
-                    xFlashPage(pageAddr, page);
+                    flashPage(pageAddr, page);
                 }
 
                 pageAddr += page.len();
             }
+            
+            verifyImage(hexData);
         });
+    }
+    
+    function verifyImage(hexData) {
+        hexData.seek(0);
+        
+        while (!hexData.eos()) {
+            local line = readLine(hexData);
+
+            if (line.type == HEX_TYPE_END) {
+                break;
+            }
+            
+            if (line.len == 0) {
+                continue;
+            }
+            
+            local addr = line.addr;
+            local data = line.data;
+
+            while (!data.eos()) {
+                local t1 = addr % 2 == 0 ? 0x20 : 0x28; // High or low byte of word.
+                local t3 = addr >> 1;
+                local t2 = t3 >> 8;
+                local actual = spiTransaction(t1, t2, t3) & 0xff;
+                local expected = data.readn('b');
+                
+                if (actual != expected) {
+                    throw format("expected 0x%02x but found 0x%02x at 0x%04x", expected, actual, addr)
+                }
+                
+                addr++;
+            }
+        }
     }
 
     // TODO: remove
@@ -214,35 +392,7 @@ class InSystemProgrammer {
         
         page.seek(0);
     }
-    
-    function xFlashWord(hilo, addr, data) {
-        spiTransaction(0x40+8*hilo, addr>>8 & 0xff, addr & 0xff, data);
-    }
-    
-    function xFlashPage(pageaddr, pagebuff) {
-        // CLOCK SPEED???
-        dumpPage(pageaddr, pagebuff);
 
-        for (local i = 0; i < pagebuff.len() / 2; i++) {
-            xFlashWord(0, i, pagebuff.readn('b'));
-            xFlashWord(1, i, pagebuff.readn('b'));
-        }
-        
-        server.log(format("new 0x%04x, old 0x%04x", (pageaddr >> 1), ((pageaddr / 2) & 0xFFC0)));
-
-        pageaddr = pageaddr >> 1; // Word address.
-
-        // pageaddr = (pageaddr / 2) & 0xFFC0;
-        
-        local commitreply = spiTransaction(0x4C, (pageaddr >> 8) & 0xff, pageaddr & 0xff, 0);
-        
-        if (commitreply != pageaddr) {
-            throw commitreply + " != " + pageaddr;
-        }
-        
-        pollUntilReady();
-    }
-    
     function flashPage(pageAddr, page) {
 //        dumpPage(pageAddr, page);
         
@@ -266,24 +416,27 @@ class InSystemProgrammer {
     }
     
     function commitPage(pageAddr) {
-        local wordAddr = (pageAddr / 2) & 0xFFC0;
+        // IMPORTANT: both Adafruit and Nick Gammon AND the address with a mask.
+        // This is only necessary to get the start of page address for an arbitrary address.
+        // So this isn't required here as the passed in address is always the start of a page.
+        // If you do need a mask then it needs to be calculated according to the page size:
+        //   local mask = ~(page.len() - 1)
+        // Nick Gammon handles this correctly - Adafruit hardcode for the 128B page size of the ATMega16 and ATMega32 famalies.
+        local wordAddr = pageAddr >> 1;
         local addrHigh = wordAddr >> 8 & 0xFF;
         local addrLow = wordAddr & 0xFF;
         
-        server.log(format("XXX%d commit 0x%04x 0x%02x 0x%02x", i++, wordAddr, addrHigh, addrLow));
-        local result = spiTransaction(0x4C, addrHigh, addrLow, 0);
-        
-        server.log(format("XXX%d 0x%06x", i++, result))
+        local result = spiTransaction(0x4C, addrHigh, addrLow);
         
         if (result != wordAddr) {
-            throw "could not commit page to " + pageAddr;
+            throw "could not commit page " + pageAddr;
         }
         
         pollUntilReady();
     }
 
     // Derived from https://github.com/adafruit/Standalone-Arduino-AVR-ISP-programmer/blob/master/code.cpp    
-    function spiTransaction(b0, b1 = 0, b2 = 0, b3 = 0, offset = 3) {
+    function spiTransaction(b0, b1 = 0, b2 = 0, b3 = 0) {
         local out = blob(4);
         
         out.writen(b0, 'b');
@@ -296,19 +449,15 @@ class InSystemProgrammer {
         // Note: oddly the Adafruit code tries to return 3 bytes in 16 bits.
         return  0xFFFF & ((r[2] << 8) + r[3]);
     }
-    
-
 
     function chipErase() {
         server.log("Info: erasing chip");
-        local CHIP_ERASE = 0x80;
-        programWrite(CHIP_ERASE);
+
+        program(PROGRAM_ENABLE, CHIP_ERASE, 0, 0);
         pollUntilReady();
     }
     
     function readPage(hexData, pageAddr, page) {
-        blankPage(page);
-        
         local nextPageAddr = pageAddr + page.len();
         local blank = true;
 
@@ -336,9 +485,13 @@ class InSystemProgrammer {
                 throw "HEX data overflows page boundary"
             }
             
+            if (blank) {
+                blankPage(page);
+                blank = false;
+            }
+            
             page.seek(pageOffset);
             page.writeblob(line.data);
-            blank = false;
         }
         
         page.seek(0);
@@ -379,14 +532,15 @@ class InSystemProgrammer {
             count++;
             
             imp.sleep(0.1); // 100ms
-            sclk.write(0);
+            // TODO: Nick Gammon and Adafruit put SCLK low at this point.
+            // Not doing so /seems/ to be OK - is it?
             reset.write(1);
             imp.sleep(0.001); // 1ms
             reset.write(0);
             imp.sleep(0.025); // 25ms
             
-            confirm = program2(PROGRAM_ENABLE, 2);
-        } while (confirm != PROGRAM_ENABLE[1]);
+            confirm = spiTransaction(PROGRAM_ENABLE, PROGRAM_ACK) >> 8;
+        } while (confirm != PROGRAM_ACK);
         
         server.log("Info: entered programming mode after " + count + " attempts");
     }
@@ -410,65 +564,8 @@ class InSystemProgrammer {
         return program(s[0], s[1], 0, 0, offset);
     }
     
-    // TODO: can PROGRAM_ENABLE use this?
-    // TODO: will anything other than CHIP_ERASE use this? If not remove.
-    function programWrite(b1) {
-        program(0xAC, b1, 0, 0);
-    }
-
     function byteToString(b) {
         return format("0x%02x", b);
-    }
-    
-    function writeSketch() {
-        chipErase();
-        
-        server.log("Info: writing pages...");
-        
-        // THE ADAFRUIT SKETCH CAN DEAL WITH ORIGINAL .hex FILES WITH "\n" ADDED
-        // TO EACH LINE. AND IT DOES SOME FUSE PROGRAMMING THAT SEEMS TO BE
-        // MISSING HERE. HOWEVER I WONDER IF IT DOES TOO MUCH FUSE PROGRAMMING.
-        // IF YOU LOOK IN
-        // /Applications/Arduino.app/Contents/Resources/Java/hardware/arduino/boards.txt
-        // PROBABLY JUST THE LOCK BITS NEED TO SET/UNSET.
-        // AND IF YOU LOOK AT https://code.google.com/p/arduino/wiki/Platforms IT SEEMS
-        // THOSE ARE ONLY NEEDED FOR WHEN BURNING A BOOTLOADER.
-        // The contents of
-        // http://svn.savannah.nongnu.org/viewvc/*checkout*/trunk/avrdude/avrdude.conf.in?root=avrdude
-        // look more useful that boards.txt - it covers more boards and includes more details (signatures etc).
-        
-        // for (local i = 0; i < len; i += 2) {
-        //     local currentPage = (addr + i) & pagemask;
-            
-        //     if (currentPage != oldPage) {
-        //         commitPage(oldPage);
-        //         oldPage = currentPage;
-        //     }
-            
-        //     writeFlash(addr + i, sketch[i]);
-        //     writeFlash(addr + i + 1, sketch[i + 1]);
-        // }
-        
-        // commitPage(oldPage);
-        
-        server.log("Info: completed");
-        // for (i = 0; i < len; i += 2)
-        //   {
-        //   unsigned long thisPage = (addr + i) & pagemask;
-        //   // page changed? commit old one
-        //   if (thisPage != oldPage)
-        //     {
-        //     commitPage (oldPage);
-        //     oldPage = thisPage;
-        //     }  
-        //   writeFlash (addr + i, pgm_read_byte(bootloader + i));
-        //   writeFlash (addr + i + 1, pgm_read_byte(bootloader + i + 1));
-        //   }  // end while doing each word
-          
-        // // commit final page
-        // commitPage (oldPage);
-        // Serial.println ("Written.");
-        // }
     }
     
     function pollUntilReady() {
@@ -503,9 +600,6 @@ class InSystemProgrammer {
 class InSystemProgrammer189 extends InSystemProgrammer {
     constructor(_reset) {
         spi = hardware.spi189;
-        sclk = hardware.pin1;
-        mosi = hardware.pin8;
-        miso = hardware.pin9;
         reset = _reset;
         
         base.constructor();
