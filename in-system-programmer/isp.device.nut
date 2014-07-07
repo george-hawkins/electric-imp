@@ -142,17 +142,6 @@ class Fuses {
         spi = _spi;
     }
     
-    function spiTransaction(i, offset = 3) {
-        local out = blob(4);
-        
-        out.writen(i, 'i');
-        out.swap4();
-        
-        server.log(format("0x%02x%02x%02x%02x", out[3], out[2], out[1], out[0]));
-        
-        return spi.writeread(out)[offset];
-    }
-
     function readLfuse() {
         return spiTransaction(READ_LFUSE);
     }
@@ -169,7 +158,19 @@ class Fuses {
         return spiTransaction(READ_LOCK);
     }
     
-    // TODO: remove/merge with other one.
+    // TODO: remove.
+    function spiTransaction(i, offset = 3) {
+        local out = blob(4);
+        
+        out.writen(i, 'i');
+        out.swap4();
+        
+        server.log(format("0x%02x%02x%02x%02x", out[3], out[2], out[1], out[0]));
+        
+        return spi.writeread(out)[offset];
+    }
+
+    // TODO: remove.
     function pollUntilReady() {
         local POLL_READY = 0xF0000000;
         local count = 1;
@@ -227,15 +228,7 @@ class Fuses {
 
 class InSystemProgrammer {
     SPICLK = 250; // 250KHz - slow enough for processors like the ATtiny.
-    PROGRAM_ENABLE = 0xAC;
-    PROGRAM_ACK = 0x53;
-    READ_SIGNATURE = 0x30;
-    READ_LFUSE = 0x50;
-    READ_EFUSE = "\x50\x08";
-    READ_HFUSE = "\x58\x08";
-    READ_LOCK = 0x58;
-    CHIP_ERASE = 0x80;
-    
+
     HEX_TYPE_END = 0x01;
 
     spi = null;
@@ -274,15 +267,15 @@ class InSystemProgrammer {
         }
     }
     
+    READ_SIGNATURE = 0x30000000;
+    
     function getSignature() {
         return run(function() {
-            local sig = [];
-            
-            for (local i = 0; i < 3; i++) {
-                sig.append(program(READ_SIGNATURE, 0, i));
-            }
-            
-            return sig;
+            return [
+                xxx(READ_SIGNATURE | 0x0000),
+                xxx(READ_SIGNATURE | 0x0100),
+                xxx(READ_SIGNATURE | 0x0200)
+            ];
         });
     }
     
@@ -351,109 +344,86 @@ class InSystemProgrammer {
                 continue;
             }
             
-            local addr = line.addr;
+            local wordAddr = line.addr >> 1;
             local data = line.data;
-
+            
+            // We expect pairs of two bytes, i.e. words.
+            if (data.len() % 2 != 0) {
+                throw format("line 0x04x doesn't end on a word boundary", line.addr);
+            }
+            
             while (!data.eos()) {
-                local t1 = addr % 2 == 0 ? 0x20 : 0x28; // High or low byte of word.
-                local t3 = addr >> 1;
-                local t2 = t3 >> 8;
-                local actual = spiTransaction(t1, t2, t3) & 0xff;
-                local expected = data.readn('b');
-                
-                if (actual != expected) {
-                    throw format("expected 0x%02x but found 0x%02x at 0x%04x", expected, actual, addr)
-                }
-                
-                addr++;
+                verifyFlashByte(READ_FLASH_LO, wordAddr, data.readn('b'));
+                verifyFlashByte(READ_FLASH_HI, wordAddr, data.readn('b'));
+                wordAddr++;
             }
         }
     }
-
-    // TODO: remove
-    i = 0
-    function dumpPage(pageAddr, page) {
-        server.log(format("XXX%d pageAddr=0x%04x", i++, pageAddr));
-        local out = "";
-        local count = 0;
+    
+    function verifyFlashByte(command, wordAddr, expected) {
+        local actual = xxx(addWordAddr(command, wordAddr));
         
-        while (!page.eos()) {
-            out += format("%02X", page.readn('b'));
-            if (++count == 16) {
-                server.log(format("XXX%d %s", i++, out));
-                out = "";
-                count = 0;
-            }
+        if (actual != expected) {
+            // IMPORTANT: the address used here is the *word* address.
+            throw format("expected 0x%02x but found 0x%02x at word-address 0x%04x",
+                expected, actual, wordAddr)
         }
-        
-        if (count != 0) {
-            server.log(format("XXX%d %s", i++, out));
-        }
-        
-        page.seek(0);
     }
+    
+    READ_FLASH_LO = 0x20000000;
+    READ_FLASH_HI = 0x28000000;
 
     function flashPage(pageAddr, page) {
-//        dumpPage(pageAddr, page);
-        
-        local offset = 0;
+        local wordOffset = 0;
         
         while (!page.eos()) {
-            flashWord(offset++, page.readn('b'), page.readn('b'));
+            flashByte(WRITE_FLASH_LO, wordOffset, page.readn('b'));
+            flashByte(WRITE_FLASH_HI, wordOffset, page.readn('b'));
+            wordOffset++;
         }
         
         commitPage(pageAddr);
     }
     
-    function flashWord(offset, wordLow, wordHigh) {
-        local addrHigh = offset >> 8 & 0xFF;
-        local addrLow = offset & 0xFF;
-        
-        //server.log(format("XXX%d 0x%04x 0x%02x 0x%02x - 0x%02x 0x%02x", i++, offset, addrHigh, addrLow, wordLow, wordHigh));
-        
-        program(0x40, addrHigh, addrLow, wordLow);
-        program(0x48, addrHigh, addrLow, wordHigh);
+    WRITE_FLASH_LO = 0x40000000;
+    WRITE_FLASH_HI = 0x48000000;
+    
+    function flashByte(command, wordAddr, b) {
+        xxx(addWordAddr(command, wordAddr) | b);
     }
     
+    function addWordAddr(command, wordAddr) {
+        return command | (wordAddr << 8);
+    }
+
+    COMMIT_PAGE = 0x4C000000;
+    
     function commitPage(pageAddr) {
-        // IMPORTANT: both Adafruit and Nick Gammon AND the address with a mask.
+        
+        // Note: both Adafruit and Nick Gammon AND the address with a mask.
         // This is only necessary to get the start of page address for an arbitrary address.
-        // So this isn't required here as the passed in address is always the start of a page.
-        // If you do need a mask then it needs to be calculated according to the page size:
+        // Here the passed in address is always the start of a page.
+        // If you do need a mask then it must be calculated according to the page size:
         //   local mask = ~(page.len() - 1)
-        // Nick Gammon handles this correctly - Adafruit hardcode for the 128B page size of the ATMega16 and ATMega32 famalies.
+        // Nick Gammon handles this correctly - Adafruit hardcode for the 128 byte page
+        // size of the ATMega16 and ATMega32 famalies.
+        
         local wordAddr = pageAddr >> 1;
-        local addrHigh = wordAddr >> 8 & 0xFF;
-        local addrLow = wordAddr & 0xFF;
-        
-        local result = spiTransaction(0x4C, addrHigh, addrLow);
-        
-        if (result != wordAddr) {
+        local command = addWordAddr(COMMIT_PAGE, wordAddr);
+
+        if ((xxx(command, -1) & 0xFFFF) != wordAddr) {
             throw "could not commit page " + pageAddr;
         }
-        
+
         pollUntilReady();
     }
 
-    // Derived from https://github.com/adafruit/Standalone-Arduino-AVR-ISP-programmer/blob/master/code.cpp    
-    function spiTransaction(b0, b1 = 0, b2 = 0, b3 = 0) {
-        local out = blob(4);
-        
-        out.writen(b0, 'b');
-        out.writen(b1, 'b');
-        out.writen(b2, 'b');
-        out.writen(b3, 'b');
-        
-        local r = spi.writeread(out);
-        
-        // Note: oddly the Adafruit code tries to return 3 bytes in 16 bits.
-        return  0xFFFF & ((r[2] << 8) + r[3]);
-    }
-
+    CHIP_ERASE = 0xAC800000;
+    
     function chipErase() {
         server.log("Info: erasing chip");
 
-        program(PROGRAM_ENABLE, CHIP_ERASE, 0, 0);
+        xxx(CHIP_ERASE);
         pollUntilReady();
     }
     
@@ -523,6 +493,10 @@ class InSystemProgrammer {
         return line;
     }
 
+    PROG_ENABLE = 0xAC530000;
+    PROG_ACK = 0x53; // 3rd byte of PROG_ENABLE
+    
+    // TODO: put limit on looping, i.e. retrying.
     function startProgramming() {
         local confirm;
         local count = 0;
@@ -539,8 +513,8 @@ class InSystemProgrammer {
             reset.write(0);
             imp.sleep(0.025); // 25ms
             
-            confirm = spiTransaction(PROGRAM_ENABLE, PROGRAM_ACK) >> 8;
-        } while (confirm != PROGRAM_ACK);
+            confirm = xxx(PROG_ENABLE, 2);
+        } while (confirm != PROG_ACK);
         
         server.log("Info: entered programming mode after " + count + " attempts");
     }
@@ -548,38 +522,17 @@ class InSystemProgrammer {
     function endProgramming() {
         reset.write(1);
     }
-    
-    function program(b0, b1 = 0, b2 = 0, b3 = 0, offset = 3) {
-        local out = blob(4);
-        
-        out.writen(b0, 'b');
-        out.writen(b1, 'b');
-        out.writen(b2, 'b');
-        out.writen(b3, 'b');
-        
-        return spi.writeread(out)[offset];
-    }
-    
-    function program2(s, offset = 3) {
-        return program(s[0], s[1], 0, 0, offset);
-    }
-    
-    function byteToString(b) {
-        return format("0x%02x", b);
-    }
-    
+
+    POLL_READY = 0xF0000000;
+
+    // TODO: put limit on looping, i.e. retrying.
     function pollUntilReady() {
-        local POLL_READY = 0xF0;
-        local count = 0;
+        local count = 1;
         local start = hardware.micros();
         
-        // TODO: some MCUs apparently don't support POLL_READY. The families containing
-        // the 328 and the ATtinyX5s both support POLL_READY. To check for a different
-        // family look for the "Serial Programming Instruction Set" table in the MCUs
-        // datasheet - one should find Poll RDY. If not one should simply wait here for
-        // the time given for WD_FLASH in the datasheet. Nick Gammon waits 10ms in
-        // https://github.com/nickgammon/arduino_sketches/blob/master/Atmega_Board_Programmer/Atmega_Board_Programmer.ino
-        while ((program(POLL_READY) & 0x01) != 0x00) {
+        // Some MCUs don't support POLL_READY. For these cases it would be necessary
+        // to wait the delay defined by part.memories.flash.min_write_delay
+        while ((xxx(POLL_READY) & 0x01) != 0x00) {
             count++;
         }
         
@@ -587,14 +540,24 @@ class InSystemProgrammer {
         server.log("Info: polled " + count + " times over " + diff + "us");
     }
 
-    //TODO: find out why the following doesn't work:
-    //const foo = "\xAC\x53\x00\x00";
-    //spi.write(foo[0]);
-    //spi.write(foo[1]);
-    // //spi.write(foo[0].tostring());
-    // //spi.write(foo[1].tostring());
-    //confirm = spi.writeread("\x00")[0]; // Surely simply "\x00" should work?
-    //spi.write("\x00");
+    // TODO: should -1 be default offset? And should swap4() always be applied and
+    // offset adjusted accordingly?
+    // TODO: rename to spiCommand, spiSend, spiTransaction ???
+    function xxx(i, offset = 3) {
+        local out = blob(4);
+        
+        out.writen(i, 'i');
+        out.swap4();
+        
+        local result = spi.writeread(out)
+
+        if (offset == -1) {
+            result.swap4();
+            return result.readn('i');
+        } else {
+            return result[offset];
+        }
+    }
 }
 
 class InSystemProgrammer189 extends InSystemProgrammer {
