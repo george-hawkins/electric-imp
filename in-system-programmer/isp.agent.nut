@@ -27,55 +27,6 @@ function dumpTable(table, indent = ">") {
     }
 }
 
-// ----
-// Testing Blob behavior.
-
-// foo <- blob(4);
-// i <- 0;
-
-// server.log("len(): " + foo.len());
-
-// i = 0;
-// expand <- foo.len() * 2;
-// while (!foo.eos() && i++ < expand) {
-//     foo.writen(0xff, 'b');
-// }
-
-// // Did blob expand?
-// server.log("is eos() for reading only? " + i);
-
-// foo.writen(0xff, 'b');
-// foo.writen(0xff, 'b');
-// bar <- foo.tell();
-// foo.writen(0xff, 'b');
-// foo.writen(0xff, 'b');
-
-// server.log("len(): " + foo.len());
-
-// server.log("no seek(0)");
-// i = 0;
-// while (!foo.eos()) {
-//     server.log(format("%d 0x%02x", i++, foo.readn('b')));
-// }
-// server.log("seek(0)");
-// foo.seek(0);
-// i = 0;
-// while (!foo.eos()) {
-//     server.log(format("%d 0x%02x", i++, foo.readn('b')));
-// }
-
-// foo.seek(bar);
-// foo.writen(0x7f, 'b');
-// server.log("replace or insert?");
-// foo.seek(0);
-// i = 0;
-// while (!foo.eos()) {
-//     server.log(format("%d 0x%02x", i++, foo.readn('b')));
-// }
-
-// server.log("len(): " + foo.len());
-// --
-
 const PROGRAMMER_PATH = "/programmer/";
 const NO_TRAILING_SLASH = "/programmer"; // Can't use method call, e.g. slice(...), with const.
 const ACTION_PATH = "/programmer/action/";
