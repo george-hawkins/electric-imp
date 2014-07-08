@@ -1,3 +1,19 @@
+/**
+ * Copyright 2014 George C. Hawkins
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+ 
 function dumpTable(table, indent = ">") {
     foreach (key, value in table) {
         server.log(indent + key + " = " + value + " ");
@@ -10,6 +26,55 @@ function dumpTable(table, indent = ">") {
         }
     }
 }
+
+// ----
+// Testing Blob behavior.
+
+// foo <- blob(4);
+// i <- 0;
+
+// server.log("len(): " + foo.len());
+
+// i = 0;
+// expand <- foo.len() * 2;
+// while (!foo.eos() && i++ < expand) {
+//     foo.writen(0xff, 'b');
+// }
+
+// // Did blob expand?
+// server.log("is eos() for reading only? " + i);
+
+// foo.writen(0xff, 'b');
+// foo.writen(0xff, 'b');
+// bar <- foo.tell();
+// foo.writen(0xff, 'b');
+// foo.writen(0xff, 'b');
+
+// server.log("len(): " + foo.len());
+
+// server.log("no seek(0)");
+// i = 0;
+// while (!foo.eos()) {
+//     server.log(format("%d 0x%02x", i++, foo.readn('b')));
+// }
+// server.log("seek(0)");
+// foo.seek(0);
+// i = 0;
+// while (!foo.eos()) {
+//     server.log(format("%d 0x%02x", i++, foo.readn('b')));
+// }
+
+// foo.seek(bar);
+// foo.writen(0x7f, 'b');
+// server.log("replace or insert?");
+// foo.seek(0);
+// i = 0;
+// while (!foo.eos()) {
+//     server.log(format("%d 0x%02x", i++, foo.readn('b')));
+// }
+
+// server.log("len(): " + foo.len());
+// --
 
 const PROGRAMMER_PATH = "/programmer/";
 const NO_TRAILING_SLASH = "/programmer"; // Can't use method call, e.g. slice(...), with const.
@@ -61,10 +126,10 @@ function getUploadHexParam(request) {
     };
 }
 
-function getContent(url) {
-    local request = http.get(url);
+function getContent(url, headers = { }) {
+    local request = http.get(url, headers);
     local response = request.sendsync();
-    
+
     if (response.statuscode != 200) {
         throw response.statuscode + " - " + response.body;
     }
@@ -84,6 +149,7 @@ function getIndex() {
 // -----------------------------------------------------------------------------
 
 const SIGNATURE_URL = "https://avrdude-conf.herokuapp.com/conf/parts/signatures/";
+ACCEPT_JSON <- { Accept = "application/json" }; // Only scalars can be consts.
 
 partCache <- { };
 
@@ -96,7 +162,7 @@ function getPart(s) {
     } else {
         local url = SIGNATURE_URL + format("0x%02x%02x%02x", s[0], s[1], s[2]);
         
-        part = http.jsondecode(getContent(url));
+        part = http.jsondecode(getContent(url, ACCEPT_JSON));
         partCache[key] <- part;
     }
     
@@ -164,6 +230,10 @@ class UploadHexPartContext extends Context {
 }
 
 function send(context) {
+    // Don't mysteriously timeout in the case where the Imp isn't even plugged in.
+    if (!pinger.isDeviceConnected())
+        throw "device is not connected";
+        
     addContext(context);
     device.send("actionSend", context.data);
 }
@@ -263,6 +333,38 @@ function requestHandler(request, response) {
 
 http.onrequest(requestHandler);
 
+// 2014-7-8: device.isconnected() returned true for my device even though it
+// had been disconnected overnight. This class is derived from Hugo's code:
+// http://forums.electricimp.com/discussion/comment/14500#Comment_14500
+pinger <- class {
+    static POLL_PERIOD = 10; // Poll every 10s.
+    lastResponse = 0;
+    
+    constructor() {
+        // TODO: is there a better way to capture the containing "this".
+        local self = this;
+        
+        device.on("pong", function(data) { self.lastResponse = time(); });
+        
+        // Try to pick up connect and disconnect events immediately.
+        device.onconnect(function() { self.lastResponse = time(); });
+        device.ondisconnect(function() { self.lastResponse = 0; });
+        
+        pollDevice();
+    }
+
+    function pollDevice() {
+        local self = this;
+        imp.wakeup(POLL_PERIOD, function() { self.pollDevice() });
+        device.send("ping", 0);
+    }
+
+    function isDeviceConnected() {
+      // Did we hear from device recently?
+      return (time() - lastResponse) < (POLL_PERIOD * 1.5);
+    }
+}();
+
 // -----------------------------------------------------------------------------
 // Start - Intel HEX parser library
 // -----------------------------------------------------------------------------
@@ -312,12 +414,13 @@ function parseIntelHex(content) {
             offset += 2;
         }
         
+        // TODO: verify checksum.
         local checksum = getByte(line, offset);
         
         program.append({
-            addr=addr
-            type=type
-            data=data
+            addr = addr
+            type = type
+            data = data
         });
     }
     
@@ -327,6 +430,8 @@ function parseIntelHex(content) {
 }
 
 // TODO: build up blob directly - start with a 64KB blob - there's no point in
+// Note: a blob needs an initial size but it will automatically grow if this
+// size is exceeded (or you can explicitly resize).
 // a larger blob given the Imp's memory constraints.
 function programToBlob(program) {
     local size = 0;

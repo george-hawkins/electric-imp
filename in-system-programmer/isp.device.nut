@@ -109,6 +109,7 @@ agent.on("actionSend", dispatchActionSend);
 // Start - In-System Programmer library
 // -----------------------------------------------------------------------------
 class Fuses {
+    // TODO: stick "static" in front of all "constants".
     WRITE_LOCK  = 0xACE00000;
     WRITE_LFUSE = 0xACA00000;
     WRITE_HFUSE = 0xACA80000;
@@ -117,117 +118,74 @@ class Fuses {
     READ_LFUSE  = 0x50000000;
     READ_HFUSE  = 0x58080000;
     READ_EFUSE  = 0x50080000;
-    
+
+    // Inspired by Nut's AvrTargetFusesWriteSafe.
     // http://sourceforge.net/p/ethernut/code/5726/tree/trunk/nut/dev/avrtarget.c
-    // Oddly Nut don't consider DWEN dangerous. It's added here as it disables ISP.
-    // These values are appropriates for many AVR MCUs but aren't universal.
-    NEVER_PROG = {
-        lfuse = 0x62 // 0110 0010 CKOUT, SUT1 / CKSEL1
-        hfuse = 0xC0 // 1100 0000 RSTDISBL, DWEN
-        efuse = 0xF8 // 1111 1000 unused bits
-    };
-    ALWAYS_PROG = {
-        lfuse = 0x1D // 0001 1101 SUT0 / CKSEL3, CKSEL2, CKSEL0
-        hfuse = 0x20 // 0010 0000 SPIEN
-        efuse = 0x00 // 0000 0000
-    }
-    // SAFE = {
-    //   1000 0000 CKDIV8
-    //   0101 1111 WDTON / EESAVE, varies
-    //   0000 0111 varies
-    // }
-    spi = null;
+    // In contrast to Nut CKOUT is viewed as safe here and DWEN as dangerous (as it clearly disables ISP).
+    // These values only provide (some degree of safety) for ATmega and ATtiny AVRs.
+    // Other AVRs have different fuse bit assingments.
+    LFUSE_SAFE = 0xC0; // CKDIV8, CKOUT
+    HFUSE_SAFE = 0x1F; // WDTON, EESAVE, boot loader bits (ATmega), brown-out bits (ATtiny).
+    parent = null;
 
-    constructor(_spi) {
-        spi = _spi;
+    constructor(_parent) {
+        parent = _parent;
     }
     
-    function readLfuse() {
-        return spiTransaction(READ_LFUSE);
-    }
+    function readLfuse() { return parent.xxx(READ_LFUSE); }
     
-    function readHfuse() {
-        return spiTransaction(READ_HFUSE);
-    }
+    function readHfuse() { return parent.xxx(READ_HFUSE); }
     
-    function readEfuse() {
-        return spiTransaction(READ_EFUSE);
-    }
+    function readEfuse() { return parent.xxx(READ_EFUSE); }
     
-    function readLock() {
-        return spiTransaction(READ_LOCK);
-    }
-    
-    // TODO: remove.
-    function spiTransaction(i, offset = 3) {
-        local out = blob(4);
-        
-        out.writen(i, 'i');
-        out.swap4();
-        
-        server.log(format("0x%02x%02x%02x%02x", out[3], out[2], out[1], out[0]));
-        
-        return spi.writeread(out)[offset];
-    }
+    function readLock() { return parent.xxx(READ_LOCK); }
 
-    // TODO: remove.
-    function pollUntilReady() {
-        local POLL_READY = 0xF0000000;
-        local count = 1;
-        local start = hardware.micros();
+    function safe(name, newValue, oldValue, safeBits) {
+        local unsafeBits = ~safeBits;
         
-        // TODO: some MCUs apparently don't support POLL_READY. The families containing
-        // the 328 and the ATtinyX5s both support POLL_READY. To check for a different
-        // family look for the "Serial Programming Instruction Set" table in the MCUs
-        // datasheet - one should find Poll RDY. If not one should simply wait here for
-        // the time given for WD_FLASH in the datasheet. Nick Gammon waits 10ms in
-        // https://github.com/nickgammon/arduino_sketches/blob/master/Atmega_Board_Programmer/Atmega_Board_Programmer.ino
-        while ((spiTransaction(POLL_READY) & 0x01) != 0x00) {
-            count++;
+        // If new value would change any unsafe bits...
+        if ((newValue & unsafeBits) != (oldValue & unsafeBits))
+            throw format("0x%02x would change unsafe bits of %s", newValue, name);
+
+        return true;
+    }
+    
+    function writeFuse(name, writeCmd, newValue, oldValue,
+        allowUnsafe = false, safeBits = 0xFF) {
+
+        if (newValue != oldValue) {
+            if (allowUnsafe || safe(name, newValue, oldValue, safeBits)) {
+                parent.xxx(writeCmd | newValue);
+                parent.pollUntilReady();
+            }
         }
-        
-        local diff = hardware.micros() - start;
-        server.log("Info: polled " + count + " times over " + diff + "us");
-    }
-
-    function writeFuse(instruction, value) {
-        spiTransaction(instruction | value);
-        pollUntilReady();
     }
     
-    function writeSafeFuse(name, instruction, value) {
-        local check = (value | NEVER_PROG[name]) & ~ALWAYS_PROG[name];
-        
-        // If you know better then override this check.
-        if (value != check)
-            throw value + " is not safe for " + name;
-
-        writeFuse(instruction, value);
+    function writeLfuse(value, allowUnsafe) {
+        writeFuse("lfuse", WRITE_LFUSE, value, readLfuse(), allowUnsafe, LFUSE_SAFE);
     }
     
-    function writeLfuse(value) {
-        writeSafeFuse("lfuse", WRITE_LFUSE, value);
-    }
-    
-    function writeHfuse(value) {
-        writeSafeFuse("hfuse", WRITE_HFUSE, value);
+    function writeHfuse(value, allowUnsafe) {
+        writeFuse("hfuse", WRITE_HFUSE, value, readHfuse(), allowUnsafe, HFUSE_SAFE);
     }
     
     function writeEfuse(value) {
-        writeSafeFuse("efuse", WRITE_EFUSE, value);
+        writeFuse("efuse", WRITE_EFUSE, value, readEfuse());
     }
     
     function writeLock(value) {
-        if ((value & ~readLock()) != 0) {
+        local oldValue = readLock();
+        
+        if ((value & ~oldValue) != 0) {
             throw "programmed lock bits can only be reset with chip erase";
             // The simplest way to erase the chip is to upload an image.
         }
-        writeFuse(WRITE_LOCK, value);
+        writeFuse("lockBits", WRITE_LOCK, value, oldValue);
     }
 }
 
 class InSystemProgrammer {
-    SPICLK = 250; // 250KHz - slow enough for processors like the ATtiny.
+    SPICLK = 250; // 250KHz - slow enough for even 1MHz processors.
 
     HEX_TYPE_END = 0x01;
 
@@ -236,7 +194,7 @@ class InSystemProgrammer {
     fuses = null;
 
     constructor() {
-        fuses = Fuses(spi);
+        fuses = Fuses(this);
         
         reset.configure(DIGITAL_OUT);
         
@@ -297,9 +255,9 @@ class InSystemProgrammer {
     
     function setFuses(lfuse, hfuse, efuse) {
         run(function() {
-            fuses.writeLfuse(lfuse)
-            fuses.writeHfuse(hfuse)
-            fuses.writeEfuse(efuse)
+            fuses.writeLfuse(lfuse, false);
+            fuses.writeHfuse(hfuse, false);
+            fuses.writeEfuse(efuse);
         });
     }
 
@@ -320,7 +278,7 @@ class InSystemProgrammer {
 
             while (pageAddr < chipSize) {
                 if (readPage(hexData, pageAddr, page)) {
-                    flashPage(pageAddr, page);
+                    writeFlashPage(pageAddr, page);
                 }
 
                 pageAddr += page.len();
@@ -347,7 +305,7 @@ class InSystemProgrammer {
             local wordAddr = line.addr >> 1;
             local data = line.data;
             
-            // We expect pairs of two bytes, i.e. words.
+            // We expect pairs of bytes, i.e. 16 bit words.
             if (data.len() % 2 != 0) {
                 throw format("line 0x04x doesn't end on a word boundary", line.addr);
             }
@@ -373,12 +331,12 @@ class InSystemProgrammer {
     READ_FLASH_LO = 0x20000000;
     READ_FLASH_HI = 0x28000000;
 
-    function flashPage(pageAddr, page) {
+    function writeFlashPage(pageAddr, page) {
         local wordOffset = 0;
         
         while (!page.eos()) {
-            flashByte(WRITE_FLASH_LO, wordOffset, page.readn('b'));
-            flashByte(WRITE_FLASH_HI, wordOffset, page.readn('b'));
+            writeFlashByte(WRITE_FLASH_LO, wordOffset, page.readn('b'));
+            writeFlashByte(WRITE_FLASH_HI, wordOffset, page.readn('b'));
             wordOffset++;
         }
         
@@ -388,7 +346,7 @@ class InSystemProgrammer {
     WRITE_FLASH_LO = 0x40000000;
     WRITE_FLASH_HI = 0x48000000;
     
-    function flashByte(command, wordAddr, b) {
+    function writeFlashByte(command, wordAddr, b) {
         xxx(addWordAddr(command, wordAddr) | b);
     }
     
@@ -573,5 +531,8 @@ class InSystemProgrammer189 extends InSystemProgrammer {
 // -----------------------------------------------------------------------------
 
 programmer <- InSystemProgrammer189(hardware.pin2);
+
+// Respond to Agent pinger logic.
+agent.on("ping", function(data) { agent.send("pong", null); });
 
 showMemory(); // Show free memory on completing startup.
