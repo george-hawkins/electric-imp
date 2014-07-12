@@ -14,38 +14,7 @@
  * limitations under the License.
  */
  
-// Tables don't support plus or append(...).
-function merge(src, dest) {
-    foreach (slot, value in src) {
-        dest[slot] <- value;
-    }
-}
-
-function setFuses(data) {
-    local lfuse = data.lfuse;
-    local hfuse = data.hfuse;
-    local efuse = data.efuse;
-    
-    programmer.setFuses(lfuse, hfuse, efuse);
-}
-
-function setLockBits(data) {
-    local lockBits = data.lockBits;
-    
-    programmer.setLock(lockBits);
-}
-
-function uploadHex(data) {
-    showMemory(); // Log how the HEX blob impacted memory.
-    
-    // Unlike elsewhere the items, due to their size, are deleted in order
-    // to avoid sending them back in the response.
-    local hexData = delete data.hexData;
-    local part = delete data.part;
-
-    programmer.uploadHex(part, hexData);
-}
-
+// Handle all the actions sent by the agent.
 function handleActionSendImpl(data) {
     try {
         switch (data.action) {
@@ -78,11 +47,14 @@ function handleActionSendImpl(data) {
     } catch (ex) {
         data.message <- ex.tostring();
         agent.send("actionFailureReply", data);
+        server.log(ex);
     }
 }
 
 handleActionSend <- handleActionSendImpl;
 
+// Using the "test" action one can flip the handler between the real one and
+// this one in order to test the agent logic for failure handling.
 function testHandleActionSendImpl(data) {
     if (data.action == "test") {
         handleActionSend = handleActionSendImpl;
@@ -94,102 +66,72 @@ function testHandleActionSendImpl(data) {
     }
 }
 
-// A HEX blob can eat up the Imp's memory - log free memory every so often to spot issues.
-function showMemory() {
-    server.log("Info: free memory=" + imp.getmemoryfree() + "B");
-}
-
 function dispatchActionSend(data) {
     handleActionSend(data);
 }
 
 agent.on("actionSend", dispatchActionSend);
 
-// -----------------------------------------------------------------------------
-// Start - In-System Programmer library
-// -----------------------------------------------------------------------------
-class Fuses {
-    // TODO: stick "static" in front of all "constants".
-    // TODO: standardize on command rather than instruction, image rather than sketch/Hex?
-    WRITE_LOCK  = 0xACE00000;
-    WRITE_LFUSE = 0xACA00000;
-    WRITE_HFUSE = 0xACA80000;
-    WRITE_EFUSE = 0xACA40000;
-    READ_LOCK   = 0x58000000;
-    READ_LFUSE  = 0x50000000;
-    READ_HFUSE  = 0x58080000;
-    READ_EFUSE  = 0x50080000;
+function setFuses(data) {
+    local lfuse = data.lfuse;
+    local hfuse = data.hfuse;
+    local efuse = data.efuse;
+    
+    programmer.setFuses(lfuse, hfuse, efuse);
+}
 
-    // Inspired by Nut's AvrTargetFusesWriteSafe.
-    // http://sourceforge.net/p/ethernut/code/5726/tree/trunk/nut/dev/avrtarget.c
-    // In contrast to Nut CKOUT is viewed as safe here and DWEN as dangerous (as it clearly disables ISP).
-    // These values only provide (some degree of safety) for ATmega and ATtiny AVRs.
-    // Other AVRs have different fuse bit assingments.
-    LFUSE_SAFE = 0xC0; // CKDIV8, CKOUT
-    HFUSE_SAFE = 0x1F; // WDTON, EESAVE, boot loader bits (ATmega), brown-out bits (ATtiny).
-    parent = null;
+function setLockBits(data) {
+    local lockBits = data.lockBits;
+    
+    programmer.setLockBits(lockBits);
+}
 
-    constructor(_parent) {
-        parent = _parent;
-    }
+function uploadHex(data) {
+    showMemory(); // Log how the HEX blob impacted memory.
     
-    function readLfuse() { return parent.xxx(READ_LFUSE); }
-    
-    function readHfuse() { return parent.xxx(READ_HFUSE); }
-    
-    function readEfuse() { return parent.xxx(READ_EFUSE); }
-    
-    function readLock() { return parent.xxx(READ_LOCK); }
+    // Unlike elsewhere the items, due to their size, are deleted in order
+    // to avoid sending them back in the response.
+    local hexData = HexData(delete data.part, delete data.hexData);
 
-    function safe(name, newValue, oldValue, safeBits) {
-        local unsafeBits = ~safeBits;
-        
-        // If new value would change any unsafe bits...
-        if ((newValue & unsafeBits) != (oldValue & unsafeBits))
-            throw format("0x%02x would change unsafe bits of %s", newValue, name);
+    programmer.uploadHex(hexData);
+}
 
-        return true;
-    }
-    
-    function writeFuse(name, writeCmd, newValue, oldValue,
-        allowUnsafe = false, safeBits = 0xFF) {
-
-        if (newValue != oldValue) {
-            if (allowUnsafe || safe(name, newValue, oldValue, safeBits)) {
-                parent.xxx(writeCmd | newValue);
-                parent.pollUntilReady();
-            }
-        }
-    }
-    
-    function writeLfuse(value, allowUnsafe) {
-        writeFuse("lfuse", WRITE_LFUSE, value, readLfuse(), allowUnsafe, LFUSE_SAFE);
-    }
-    
-    function writeHfuse(value, allowUnsafe) {
-        writeFuse("hfuse", WRITE_HFUSE, value, readHfuse(), allowUnsafe, HFUSE_SAFE);
-    }
-    
-    function writeEfuse(value) {
-        writeFuse("efuse", WRITE_EFUSE, value, readEfuse());
-    }
-    
-    function writeLock(value) {
-        local oldValue = readLock();
-        
-        if ((value & ~oldValue) != 0) {
-            throw "programmed lock bits can only be reset with chip erase";
-            // The simplest way to erase the chip is to upload an image.
-        }
-        writeFuse("lockBits", WRITE_LOCK, value, oldValue);
+// Tables don't support plus or append(...).
+function merge(src, dest) {
+    foreach (slot, value in src) {
+        dest[slot] <- value;
     }
 }
 
+function showMemory() {
+    server.log("free memory=" + imp.getmemoryfree() + "B");
+}
+
+// -----------------------------------------------------------------------------
+// Start - In-System Programmer library
+// -----------------------------------------------------------------------------
 class InSystemProgrammer {
-    SPICLK = 250; // 250KHz - slow enough for even 1MHz processors.
+    static SPICLK = 250; // 250KHz - slow enough for even 1MHz processors.
 
-    HEX_TYPE_END = 0x01;
+    static READ_SIGNATURE = 0x30000000;
+    
+    static READ_FLASH_LO = 0x20000000;
+    static READ_FLASH_HI = 0x28000000;
+    static WRITE_FLASH_LO = 0x40000000;
+    static WRITE_FLASH_HI = 0x48000000;
+    
+    static COMMIT_PAGE = 0x4C000000;
+    
+    static CHIP_ERASE = 0xAC800000;
 
+    static PROG_ENABLE = 0xAC530000;
+    static PROG_ACK = 0x5300;
+
+    static POLL_READY = 0xF0000000;
+
+    // Most actions take a few milliseconds so 1s is a generous retry timeout.
+    static RETRY_TIMEOUT = 1000000;
+    
     spi = null;
     reset = null;
     fuses = null;
@@ -210,6 +152,132 @@ class InSystemProgrammer {
         server.log("speed: " + speed + "KHz");
     }
     
+    function getSignature() {
+        return run(function() {
+            return [
+                spiSend(READ_SIGNATURE | 0x0000),
+                spiSend(READ_SIGNATURE | 0x0100),
+                spiSend(READ_SIGNATURE | 0x0200)
+            ];
+        });
+    }
+    
+    function getFuses() {
+        return run(function() {
+            return {
+                lfuse = fuses.getLfuse()
+                hfuse = fuses.getHfuse()
+                efuse = fuses.getEfuse()
+            };
+        });
+    }
+    
+    function setFuses(lfuse, hfuse, efuse) {
+        run(function() {
+            fuses.setLfuse(lfuse, false);
+            fuses.setHfuse(hfuse, false);
+            fuses.setEfuse(efuse);
+        });
+    }
+
+    function getLockBits() {
+        return run(function() {
+            return fuses.getLockBits();
+        });
+    }
+    
+    function setLockBits(lockBits) {
+        run(function() {
+           fuses.setLockBits(lockBits);
+        });
+    }
+
+    function uploadHex(hexData) {
+        return run(function() {
+            chipErase();
+
+            local page;
+
+            while ((page = hexData.readPage()) != null) {
+                writeFlashPage(page);
+            }
+
+            hexData.reset()
+            verifyImage(hexData);
+        });
+    }
+
+    function verifyImage(hexData) {
+        local line;
+
+        while ((line = hexData.readDataLine()) != null) {
+            local wordAddr = line.addr >> 1;
+            local data = line.data;
+            
+            // We expect pairs of bytes, i.e. 16 bit words.
+            if (data.len() % 2 != 0) {
+                throw format("line 0x04x does not end on a word boundary", line.addr);
+            }
+            
+            while (!data.eos()) {
+                verifyFlashByte(READ_FLASH_LO, wordAddr, data.readn('b'));
+                verifyFlashByte(READ_FLASH_HI, wordAddr, data.readn('b'));
+                wordAddr++;
+            }
+        }
+    }
+    
+    function verifyFlashByte(command, wordAddr, expected) {
+        local actual = spiSend(addWordAddr(command, wordAddr));
+        
+        if (actual != expected) {
+            // IMPORTANT: the address shown in this exception is the *word* address.
+            throw format("expected 0x%02x but found 0x%02x at word-address 0x%04x",
+                expected, actual, wordAddr)
+        }
+    }
+    
+    function writeFlashPage(page) {
+        local wordOffset = 0;
+        
+        while (!page.data.eos()) {
+            writeFlashByte(WRITE_FLASH_LO, wordOffset, page.data.readn('b'));
+            writeFlashByte(WRITE_FLASH_HI, wordOffset, page.data.readn('b'));
+            wordOffset++;
+        }
+        
+        commitPage(page.addr);
+    }
+    
+    function writeFlashByte(command, wordAddr, b) {
+        spiSend(addWordAddr(command, wordAddr) | b);
+    }
+    
+    function commitPage(pageAddr) {
+        // Note: if comparing with Adafruit and Nick Gammon - a mask is not needed
+        // here as the passed in address is known to the be the start of a page.
+        
+        local wordAddr = pageAddr >> 1;
+        local command = addWordAddr(COMMIT_PAGE, wordAddr);
+
+        if (spiSend(command, 0xFFFF) != wordAddr) {
+            throw "could not commit page " + pageAddr;
+        }
+
+        pollUntilReady();
+    }
+    
+    function addWordAddr(command, wordAddr) {
+        return command | (wordAddr << 8);
+    }
+
+    function chipErase() {
+        server.log("erasing chip");
+
+        spiSend(CHIP_ERASE);
+        pollUntilReady();
+    }
+    
     function run(action) {
         startProgramming();
         
@@ -226,244 +294,9 @@ class InSystemProgrammer {
         }
     }
     
-    READ_SIGNATURE = 0x30000000;
-    
-    function getSignature() {
-        return run(function() {
-            return [
-                xxx(READ_SIGNATURE | 0x0000),
-                xxx(READ_SIGNATURE | 0x0100),
-                xxx(READ_SIGNATURE | 0x0200)
-            ];
-        });
-    }
-    
-    function getFuses() {
-        return run(function() {
-            return {
-                lfuse = fuses.readLfuse()
-                hfuse = fuses.readHfuse()
-                efuse = fuses.readEfuse()
-            };
-        });
-    }
-    
-    function getLockBits() {
-        return run(function() {
-            return fuses.readLock();
-        });
-    }
-    
-    function setFuses(lfuse, hfuse, efuse) {
-        run(function() {
-            fuses.writeLfuse(lfuse, false);
-            fuses.writeHfuse(hfuse, false);
-            fuses.writeEfuse(efuse);
-        });
-    }
-
-    // TODO: standardize on one of set/write, get/read, lock/lockBits, sketch/image/HexData   
-    function setLock(lock) {
-        run(function() {
-           fuses.writeLock(lock);
-        });
-    }
-
-    function uploadHex(part, hexData) {
-        return run(function() {
-            local chipSize = part.memories.flash.size;
-            local page = blob(part.memories.flash.page_size);
-            local pageAddr = 0;
-            
-            chipErase();
-
-            while (pageAddr < chipSize) {
-                if (readPage(hexData, pageAddr, page)) {
-                    writeFlashPage(pageAddr, page);
-                }
-
-                pageAddr += page.len();
-            }
-            
-            verifyImage(hexData);
-        });
-    }
-    
-    function verifyImage(hexData) {
-        hexData.seek(0);
-        
-        while (!hexData.eos()) {
-            local line = readLine(hexData);
-
-            if (line.type == HEX_TYPE_END) {
-                break;
-            }
-            
-            if (line.len == 0) {
-                continue;
-            }
-            
-            local wordAddr = line.addr >> 1;
-            local data = line.data;
-            
-            // We expect pairs of bytes, i.e. 16 bit words.
-            if (data.len() % 2 != 0) {
-                throw format("line 0x04x doesn't end on a word boundary", line.addr);
-            }
-            
-            while (!data.eos()) {
-                verifyFlashByte(READ_FLASH_LO, wordAddr, data.readn('b'));
-                verifyFlashByte(READ_FLASH_HI, wordAddr, data.readn('b'));
-                wordAddr++;
-            }
-        }
-    }
-    
-    function verifyFlashByte(command, wordAddr, expected) {
-        local actual = xxx(addWordAddr(command, wordAddr));
-        
-        if (actual != expected) {
-            // IMPORTANT: the address used here is the *word* address.
-            throw format("expected 0x%02x but found 0x%02x at word-address 0x%04x",
-                expected, actual, wordAddr)
-        }
-    }
-    
-    READ_FLASH_LO = 0x20000000;
-    READ_FLASH_HI = 0x28000000;
-
-    function writeFlashPage(pageAddr, page) {
-        local wordOffset = 0;
-        
-        while (!page.eos()) {
-            writeFlashByte(WRITE_FLASH_LO, wordOffset, page.readn('b'));
-            writeFlashByte(WRITE_FLASH_HI, wordOffset, page.readn('b'));
-            wordOffset++;
-        }
-        
-        commitPage(pageAddr);
-    }
-    
-    WRITE_FLASH_LO = 0x40000000;
-    WRITE_FLASH_HI = 0x48000000;
-    
-    function writeFlashByte(command, wordAddr, b) {
-        xxx(addWordAddr(command, wordAddr) | b);
-    }
-    
-    function addWordAddr(command, wordAddr) {
-        return command | (wordAddr << 8);
-    }
-
-    COMMIT_PAGE = 0x4C000000;
-    
-    function commitPage(pageAddr) {
-        
-        // Note: both Adafruit and Nick Gammon AND the address with a mask.
-        // This is only necessary to get the start of page address for an arbitrary address.
-        // Here the passed in address is always the start of a page.
-        // If you do need a mask then it must be calculated according to the page size:
-        //   local mask = ~(page.len() - 1)
-        // Nick Gammon handles this correctly - Adafruit hardcode for the 128 byte page
-        // size of the ATMega16 and ATMega32 famalies.
-        
-        local wordAddr = pageAddr >> 1;
-        local command = addWordAddr(COMMIT_PAGE, wordAddr);
-
-        if ((xxx(command, -1) & 0xFFFF) != wordAddr) {
-            throw "could not commit page " + pageAddr;
-        }
-
-        pollUntilReady();
-    }
-
-    CHIP_ERASE = 0xAC800000;
-    
-    function chipErase() {
-        server.log("Info: erasing chip");
-
-        xxx(CHIP_ERASE);
-        pollUntilReady();
-    }
-    
-    function readPage(hexData, pageAddr, page) {
-        local nextPageAddr = pageAddr + page.len();
-        local blank = true;
-
-        while (!hexData.eos()) {
-            local pos = hexData.tell();
-            local line = readLine(hexData);
-            
-            if (line.addr >= nextPageAddr) {
-                // Rewind for rereading in next call to this function.
-                hexData.seek(pos);
-                break;
-            }
-            
-            if (line.type == HEX_TYPE_END) {
-                break;
-            }
-            
-            if (line.len == 0) {
-                continue;
-            }
-            
-            local pageOffset = line.addr - pageAddr;
-            
-            if (pageOffset + line.len > page.len()) {
-                throw "HEX data overflows page boundary"
-            }
-            
-            if (blank) {
-                blankPage(page);
-                blank = false;
-            }
-            
-            page.seek(pageOffset);
-            page.writeblob(line.data);
-        }
-        
-        page.seek(0);
-
-        return !blank;
-    }
-    
-    function blankPage(page) {
-        page.seek(0);
-        
-        while (!page.eos()) {
-            page.writen(0xff, 'b');
-        }
-        
-        page.seek(0);
-    }
-    
-    function readLine(hexData) {
-        local line = { };
-        
-        line.addr <- hexData.readn('w');
-        line.type <- hexData.readn('b');
-        line.len <- hexData.readn('b');
-        
-        if (line.len > 0) {
-            line.data <- hexData.readblob(line.len);
-        }
-        
-        return line;
-    }
-
-    PROG_ENABLE = 0xAC530000;
-    PROG_ACK = 0x53; // 3rd byte of PROG_ENABLE
-    
-    // TODO: put limit on looping, i.e. retrying.
     function startProgramming() {
-        local confirm;
-        local count = 0;
-
-        // Adafruit don't bother with retrying.        
-        do {
-            count++;
-            
+        // Adafruit doesn't bother with retrying.        
+        retry("start-promgramming", function () {
             imp.sleep(0.1); // 100ms
             // TODO: Nick Gammon and Adafruit put SCLK low at this point.
             // Not doing so /seems/ to be OK - is it?
@@ -472,50 +305,52 @@ class InSystemProgrammer {
             reset.write(0);
             imp.sleep(0.025); // 25ms
             
-            confirm = xxx(PROG_ENABLE, 2);
-        } while (confirm != PROG_ACK);
-        
-        server.log("Info: entered programming mode after " + count + " attempts");
+            return spiSend(PROG_ENABLE, 0xff00) == PROG_ACK;
+        });
     }
     
     function endProgramming() {
         reset.write(1);
     }
 
-    POLL_READY = 0xF0000000;
-
-    // TODO: put limit on looping, i.e. retrying.
+    // Some MCUs don't support POLL_READY. For these cases it would be necessary
+    // to wait the delay defined by part.memories.flash.min_write_delay
     function pollUntilReady() {
+        retry("poll-until-ready", function () {
+            return (spiSend(POLL_READY) & 0x01) == 0x00;
+        });
+    }
+
+    function retry(name, action) {
         local count = 1;
         local start = hardware.micros();
+        local diff = -1;
+        local success;
         
-        // Some MCUs don't support POLL_READY. For these cases it would be necessary
-        // to wait the delay defined by part.memories.flash.min_write_delay
-        while ((xxx(POLL_READY) & 0x01) != 0x00) {
+        while (diff < RETRY_TIMEOUT && !(success = action())) {
+            diff = hardware.micros() - start;
             count++;
         }
         
-        local diff = hardware.micros() - start;
-        server.log("Info: polled " + count + " times over " + diff + "us");
+        if (!success) {
+            throw name + " did not succeed after " + count + " attempts";
+        } else if (count > 1) {
+            server.log(name + " succeeded after " + count + " attempts and " +
+                (diff > 1000 ? (diff / 1000) + "ms" : diff + "us"));
+        }
     }
 
-    // TODO: should -1 be default offset? And should swap4() always be applied and
-    // offset adjusted accordingly?
-    // TODO: rename to spiCommand, spiSend, spiTransaction ???
-    function xxx(i, offset = 3) {
+    function spiSend(i, mask = 0xff) {
         local out = blob(4);
         
         out.writen(i, 'i');
         out.swap4();
         
-        local result = spi.writeread(out)
+        local result = spi.writeread(out);
 
-        if (offset == -1) {
-            result.swap4();
-            return result.readn('i');
-        } else {
-            return result[offset];
-        }
+        result.swap4();
+
+        return result.readn('i') & mask;
     }
 }
 
@@ -527,13 +362,191 @@ class InSystemProgrammer189 extends InSystemProgrammer {
         base.constructor();
     }
 }
+
+class Fuses {
+    static WRITE_LOCKBITS = 0xACE00000;
+    static WRITE_LFUSE    = 0xACA00000;
+    static WRITE_HFUSE    = 0xACA80000;
+    static WRITE_EFUSE    = 0xACA40000;
+    static READ_LOCKBITS  = 0x58000000;
+    static READ_LFUSE     = 0x50000000;
+    static READ_HFUSE     = 0x58080000;
+    static READ_EFUSE     = 0x50080000;
+
+    // Inspired by Nut's AvrTargetFusesWriteSafe.
+    // http://sourceforge.net/p/ethernut/code/5726/tree/trunk/nut/dev/avrtarget.c
+    // In contrast to Nut CKOUT is viewed as safe here and DWEN as dangerous (as it clearly disables ISP).
+    // These values only provide (some degree of safety) for ATmega and ATtiny AVRs.
+    // Other AVRs have different fuse bit assignments.
+    static LFUSE_SAFE = 0xC0; // CKDIV8, CKOUT
+    static HFUSE_SAFE = 0x1F; // WDTON, EESAVE, boot loader bits (ATmega), brown-out bits (ATtiny).
+
+    parent = null;
+
+    constructor(_parent) {
+        parent = _parent;
+    }
+    
+    function getLfuse() { return parent.spiSend(READ_LFUSE); }
+    
+    function getHfuse() { return parent.spiSend(READ_HFUSE); }
+    
+    function getEfuse() { return parent.spiSend(READ_EFUSE); }
+    
+    function getLockBits() { return parent.spiSend(READ_LOCKBITS); }
+
+    function safe(name, newValue, oldValue, safeBits) {
+        local unsafeBits = ~safeBits;
+        
+        // If new value would change any unsafe bits...
+        if ((newValue & unsafeBits) != (oldValue & unsafeBits))
+            throw format("0x%02x would change unsafe bits of %s", newValue, name);
+
+        return true;
+    }
+    
+    function setFuse(name, writeCmd, newValue, oldValue,
+        allowUnsafe = false, safeBits = 0xFF) {
+
+        if (newValue != oldValue) {
+            if (allowUnsafe || safe(name, newValue, oldValue, safeBits)) {
+                parent.spiSend(writeCmd | newValue);
+                parent.pollUntilReady();
+            }
+        }
+    }
+    
+    function setLfuse(value, allowUnsafe) {
+        setFuse("lfuse", WRITE_LFUSE, value, getLfuse(), allowUnsafe, LFUSE_SAFE);
+    }
+    
+    function setHfuse(value, allowUnsafe) {
+        setFuse("hfuse", WRITE_HFUSE, value, getHfuse(), allowUnsafe, HFUSE_SAFE);
+    }
+    
+    function setEfuse(value) {
+        setFuse("efuse", WRITE_EFUSE, value, getEfuse());
+    }
+    
+    function setLockBits(value) {
+        local oldValue = getLockBits();
+        
+        if ((value & ~oldValue) != 0) {
+            throw "programmed lock bits can only be reset with chip erase";
+            // The simplest way to erase the chip is to upload an image.
+        }
+        setFuse("lockBits", WRITE_LOCKBITS, value, oldValue);
+    }
+}
+
+class HexData {
+    static TYPE_DATA = 0x00;
+    static EMPTY_BLOB = blob(0);
+
+    data = null;
+    page = null;
+    pageMask = 0;
+
+    constructor(part, _data) {
+        data = _data;
+
+        page = blob(part.memories.flash.page_size);
+        pageMask = ~(page.len() - 1);
+        // The page mask calculation comes from Nick Gammon. Adafruit hardcode a mask that's
+        // only suitable for the 128B page size of the ATMega16 and ATMega32 famalies.
+    }
+
+    function reset() {
+        data.seek(0);
+    }
+
+    function readPage() {
+        local line = readDataLine();
+
+        if (line == null) return null;
+
+        data.seek(line.pos); // Undo line read.
+
+        clearPage(page);
+
+        local pageAddr = getPageAddr(line.addr);
+        local nextPageAddr = pageAddr + page.len();
+
+        while ((line = readDataLine()) != null) {
+            if (line.addr >= nextPageAddr) {
+                data.seek(line.pos); // Undo line read.
+                break;
+            }
+            
+            local pageOffset = line.addr - pageAddr;
+            
+            if (pageOffset + line.data.len() > page.len()) {
+                throw "HEX data overflows page boundary"
+            }
+
+            page.seek(pageOffset);
+            page.writeblob(line.data);
+        }
+        
+        page.seek(0);
+
+        return {
+            addr = pageAddr
+            data = page
+        };
+    }
+
+    function clearPage(page) {
+        page.seek(0);
+        
+        while (!page.eos()) {
+            page.writen(0xff, 'b');
+        }
+        
+        page.seek(0);
+    }
+    
+    // Returns the start address of the page containing the given address.
+    function getPageAddr(addr) {
+        return addr & pageMask;
+    }
+
+    function readDataLine() {
+        local line;
+        
+        while ((line = readLine()) != null) {
+            if (line.type != TYPE_DATA) {
+                return null; // Ignore everything beyond the first non-data line.
+            } else if (line.data.len() > 0) {
+                break;
+            }
+        }
+        
+        return line;
+    }
+
+    function readLine() {
+        if (data.eos()) {
+            return null;
+        }
+
+        local len;
+
+        return { 
+            pos = data.tell()
+            addr = data.readn('w')
+            type = data.readn('b')
+            data = (len = data.readn('b')) > 0 ? data.readblob(len) : EMPTY_BLOB
+        };
+    }
+}
 // -----------------------------------------------------------------------------
 // End - In-System Programmer library
 // -----------------------------------------------------------------------------
 
 programmer <- InSystemProgrammer189(hardware.pin2);
 
-// Respond to Agent pinger logic.
-agent.on("ping", function(data) { agent.send("pong", null); });
+// Respond to agent send-if-responding logic.
+agent.on("ping", function(key) { agent.send("pong", key); });
 
 showMemory(); // Show free memory on completing startup.
