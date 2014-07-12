@@ -110,6 +110,7 @@ agent.on("actionSend", dispatchActionSend);
 // -----------------------------------------------------------------------------
 class Fuses {
     // TODO: stick "static" in front of all "constants".
+    // TODO: standardize on command rather than instruction, image rather than sketch/Hex?
     WRITE_LOCK  = 0xACE00000;
     WRITE_LFUSE = 0xACA00000;
     WRITE_HFUSE = 0xACA80000;

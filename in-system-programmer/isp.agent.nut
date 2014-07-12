@@ -69,9 +69,6 @@ function getSetLockBitsParam(request) {
 function getUploadHexParam(request) {
     local parts = parseMultipart(request);
 
-    // TODO: allow part to be uploaded as a file too to allow  REST like
-    // interaction, in addition to HTML form. Could do...
-    // context.part = http.jsondecode(...) and check for this on imp side.
     return {
         hexData = parseIntelHex(parts["hexFile"].content)
     };
