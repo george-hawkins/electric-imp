@@ -13,19 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
- 
-function dumpTable(table, indent = ">") {
-    foreach (key, value in table) {
-        server.log(indent + key + " = " + value + " ");
-        if (typeof value == "table") {
-            if (value.len() == 0) {
-                server.log(indent + "  // Empty.");
-            } else {
-                dumpTable(value, indent + "  ");
-            }
-        }
-    }
-}
 
 const PROGRAMMER_PATH = "/programmer/";
 const NO_TRAILING_SLASH = "/programmer"; // Can't use method call, e.g. slice(...), with const.
@@ -36,10 +23,6 @@ server.log("Programmer URL: " + http.agenturl() + PROGRAMMER_PATH);
 // Retrieve this URL to toggle test mode on or off.
 server.log("Test on/off URL: " + http.agenturl() + PROGRAMMER_PATH + "action/test");
 
-function startsWith(a, b) {
-    return a.len() >= b.len() && a.slice(0, b.len()) == b;
-}
-
 hexBytePattern <- regexp("0x[0-9a-fA-F][0-9a-fA-F]");
 
 function getByteParam(request, name) {
@@ -49,7 +32,7 @@ function getByteParam(request, name) {
         throw name + " should be a hex byte of form \"0xXY\" but was \"" + s + "\"";
     }
     
-    return getByte(s, 2);
+    return hexParser.getByte(s, 2);
 }
 
 function getSetFusesParams(request) {
@@ -66,11 +49,17 @@ function getSetLockBitsParam(request) {
     };
 }
 
+const PARAM_HEX_FILE = "hexFile";
+
 function getUploadHexParam(request) {
-    local parts = parseMultipart(request);
+    local params = multipartParser.getParams(request);
+
+    if (!params.hasParam(PARAM_HEX_FILE)) {
+        throw "no HEX file was specified";
+    }
 
     return {
-        hexData = parseIntelHex(parts["hexFile"].content)
+        hexData = intelHexReader.process(params.getParam(PARAM_HEX_FILE).content)
     };
 }
 
@@ -130,23 +119,23 @@ class Context {
     }
 
     function handleReply(_data, success) {
+        data = _data;
+    
         try {
-            (success ? handleSuccess : handleFailure)(_data);
+            (success ? handleSuccess : handleFailure)();
         } catch (ex) {
             sendException(response, ex, data);
         }
     }
     
-    function handleSuccess(_data) {
-        data = _data;
+    function handleSuccess() {
         sendResponse(200);
     }
-    
-    function handleFailure(_data) {
-        data = _data;
+
+    function handleFailure() {
         sendResponse(500);
     }
-    
+
     function sendResponse(code) {
         sendJson(code, response, data);
     }
@@ -156,9 +145,9 @@ const GET_SIGNATURE_ACTION = "getSignature";
 const UPLOAD_HEX_ACTION = "uploadHex";
 
 class SignatureContext extends Context {
-    function handleSuccess(data) {
+    function handleSuccess() {
         data.description <- getPart(data.signature).desc;
-        base.handleSuccess(data);
+        base.handleSuccess();
     }
 }
 
@@ -171,27 +160,32 @@ class UploadHexPartContext extends Context {
         uploadHexData = _data;
     }
     
-    function handleSuccess(_data) {
-        uploadHexData.part <- getPart(_data.signature);
+    function handleSuccess() {
+        uploadHexData.part <- getPart(data.signature);
         send(Context(UPLOAD_HEX_ACTION, response, uploadHexData));
     }
 }
 
-function send(context) {
-    // Don't mysteriously timeout in the case where the Imp isn't even plugged in.
-    if (!pinger.isDeviceConnected())
-        throw "device is not connected";
-        
-    addContext(context);
-    device.send("actionSend", context.data);
+function onActionFailureReply(data) {
+    removeContext(data).handleReply(data, false);
 }
 
-device.on("actionSuccessReply", function (data) {
+function onActionSuccessReply(data) {
     removeContext(data).handleReply(data, true);
-});
-device.on("actionFailureReply", function (data) {
-    removeContext(data).handleReply(data, false);
-});
+}
+
+
+device.on("actionSuccessReply", onActionSuccessReply);
+device.on("actionFailureReply", onActionFailureReply);
+
+function send(context) {
+    addContext(context);
+    sender.send("actionSend", context.data, function () {
+        local data = context.data;
+        data.message <- "device is not responding";
+        onActionFailureReply(data);
+    });
+}
 
 contextCache <- { };
 
@@ -238,21 +232,21 @@ function handleAction(action, request, response) {
 }
 
 function sendJson(code, response, data) {
-    response.header("Content-Type", "application/json");
-    response.send(code, http.jsonencode(data));
+    local content = http.jsonencode(data);
+    
+    try {
+        response.header("Content-Type", "application/json");
+        response.send(code, content);
+    } catch (ex) {
+        server.log("exception occurred on sending " + content + " - " + ex);
+    }
 }
 
 function sendException(response, ex, data = {}) {
-    try {
         // You can throw null.
         data.message <- ex != null ? ex.tostring() : "null exception";
     
         sendJson(500, response, data);
-    } catch (sendEx) {
-        // If we can't send the exception to the client at least log it here.
-        server.log(ex);
-        server.log(sendEx);
-    }
 }
 
 function requestHandler(request, response) {
@@ -281,139 +275,148 @@ function requestHandler(request, response) {
 
 http.onrequest(requestHandler);
 
-// 2014-7-8: device.isconnected() returned true for my device even though it
-// had been disconnected overnight. This class is derived from Hugo's code:
-// http://forums.electricimp.com/discussion/comment/14500#Comment_14500
-pinger <- class {
-    static POLL_PERIOD = 10; // Poll every 10s.
-    lastResponse = 0;
+// -----------------------------------------------------------------------------
+// Start - Sender library
+// -----------------------------------------------------------------------------
+
+// device.isconnected() can take a long time to realize the device is no longer
+// connected. This singleton provides device.send(...) like behavior but takes an
+// additional failure callback argument. The real send only happens if the device
+// responds quickly to an initial ping otherwise the failure callback is invoked.
+sender <- class {
+    static TIMEOUT = 2; // 2s.
+    cache = { };
+    nextKey = -1;
     
     constructor() {
-        // TODO: is there a better way to capture the containing "this".
         local self = this;
         
-        device.on("pong", function(data) { self.lastResponse = time(); });
-        
-        // Try to pick up connect and disconnect events immediately.
-        device.onconnect(function() { self.lastResponse = time(); });
-        device.ondisconnect(function() { self.lastResponse = 0; });
-        
-        pollDevice();
+        device.on("pong", function(key) { self.doSuccess(key); });
     }
-
-    function pollDevice() {
+    
+    function send(_name, _value, _failure) {
         local self = this;
-        imp.wakeup(POLL_PERIOD, function() { self.pollDevice() });
-        device.send("ping", 0);
+        local key = nextKey++;
+
+        cache[key] <- {
+            name = _name
+            value = _value
+            failure = _failure
+        }
+        imp.wakeup(TIMEOUT, function() { self.doFailure(key); });
+        device.send("ping", key);
     }
 
-    function isDeviceConnected() {
-      // Did we hear from device recently?
-      return (time() - lastResponse) < (POLL_PERIOD * 1.5);
+    function doSuccess(key) {
+        if (key in cache) {
+            local data = delete cache[key];
+        
+            device.send(data.name, data.value);
+        } else {
+            // The device responded eventually but not within the timout period.
+            server.log("device responded too late");
+        }
+    }
+    
+    function doFailure(key) {
+        if (key in cache) {
+            local data = delete cache[key];
+
+            server.log("device failed to respond within the timeout period");
+            data.failure();
+        }
+    }
+}();
+// -----------------------------------------------------------------------------
+// End - Sender library
+// -----------------------------------------------------------------------------
+
+// -----------------------------------------------------------------------------
+// Start - Intel HEX library
+// -----------------------------------------------------------------------------
+
+// Hexadecimal format number parser.
+hexParser <- class {
+    function getByte(line, offset) {
+        return (dehex(line[offset]) << 4) + dehex(line[offset + 1]);
+    }
+
+    function dehex(c) {
+        return (c >= 'a' ? (c - 'a' + 10) : (c >= 'A' ? (c - 'A' + 10) : (c - '0')));
     }
 }();
 
-// -----------------------------------------------------------------------------
-// Start - Intel HEX parser library
-// -----------------------------------------------------------------------------
-function ignore(line) {
-    server.log("Error: ignoring line \"" + line + "\"");
-}
-
-function dehex(c) {
-    return (c >= 'a' ? (c - 'a' + 10) : (c >= 'A' ? (c - 'A' + 10) : (c - '0')));
-}
-
-function getByte(line, offset) {
-    return (dehex(line[offset]) << 4) + dehex(line[offset + 1]);
-}
-
-function parseIntelHex(content) {
-    local program = [];
-    local count = 0;
-    
-    foreach (line in split(content, "\r\n")) {
-        if (line.len() < 11) {
-            ignore(line);
-            continue;
-        }
-        
-        if (line[0] != ':') {
-            ignore(line);
-            continue;
-        }
-        
-        local len = getByte(line, 1);
-        
-        if (line.len() != (len * 2) + 11) {
-            ignore(line);
-            continue;
-        }
-        
-        local addr = getByte(line, 3) << 8;
-        addr += getByte(line, 5);
-        local type = getByte(line, 7);
-        local offset = 9;
-        
-        local data = blob(len);
-        
-        for (local i = 0; i < len; i++) {
-            data.writen(getByte(line, offset), 'b');
-            offset += 2;
-        }
-        
-        // TODO: verify checksum.
-        local checksum = getByte(line, offset);
-        
-        program.append({
-            addr = addr
-            type = type
-            data = data
-        });
-    }
-    
-    server.log("Info: read " + program.len() + " lines of hex");
-    
-    return programToBlob(program);
-}
-
-// TODO: build up blob directly - start with a 64KB blob - there's no point in
-// Note: a blob needs an initial size but it will automatically grow if this
-// size is exceeded (or you can explicitly resize).
-// a larger blob given the Imp's memory constraints.
-function programToBlob(program) {
-    local size = 0;
-    
-    foreach (line in program) {
-        size += 2; // addr
-        size += 1; // type
-        size += 1; // len
-        size += line.data.len();
-    }
-    
-    local result = blob(size);
-
-    foreach (line in program) {
-        result.writen(line.addr, 'w');
-        result.writen(line.type, 'b');
-        result.writen(line.data.len(), 'b');
-        result.writeblob(line.data);
+// Reader for Intel HEX (note the capitals) format - http://en.wikipedia.org/wiki/Intel_HEX
+intelHexReader <- class {
+    function ignore(line) {
+        server.log("Error: ignoring line \"" + line + "\"");
     }
 
-    return result;
+    function process(content) {
+        local data = blob(0);
+        local count = 0;
+        
+        foreach (line in split(content, "\r\n")) {
+            if (line.len() < 11) {
+                ignore(line);
+                continue;
+            }
+            
+            if (line[0] != ':') {
+                ignore(line);
+                continue;
+            }
+            
+            local len = hexParser.getByte(line, 1);
+            
+            if (line.len() != (len * 2) + 11) {
+                ignore(line);
+                continue;
+            }
+            
+            local addr = hexParser.getByte(line, 3) << 8;
+            addr += hexParser.getByte(line, 5);
+            local type = hexParser.getByte(line, 7);
+            local offset = 9;
+            
+            local lineData = blob(len);
+            
+            for (local i = 0; i < len; i++) {
+                lineData.writen(hexParser.getByte(line, offset), 'b');
+                offset += 2;
+            }
+            
+            // TODO: verify checksum.
+            local checksum = hexParser.getByte(line, offset);
+            
+            addLine(data, addr, type, lineData);
+
+            count++;
+        }
+        
+        server.log("read " + count + " lines of hex");
+
+        return data;
+    }
+
+    // Continually growing the data blob is probably fairly inefficient but is
+    // only marginally slower than more complicated solutions.
+    function addLine(data, addr, type, lineData) {
+        data.writen(addr, 'w');
+        data.writen(type, 'b');
+        data.writen(lineData.len(), 'b');
+        data.writeblob(lineData);
+    }
 }
 // -----------------------------------------------------------------------------
-// End - Intel HEX parser library
+// End - Intel HEX library
 // -----------------------------------------------------------------------------
 
 // -----------------------------------------------------------------------------
 // Start - Multipart form data library
 // -----------------------------------------------------------------------------
-const FORM_DATA = "Content-Disposition: form-data";
-const CONTENT_TYPE = "Content-Type:";
-
-function startsWith(a, b) {
-    return a.len() >= b.len() && a.slice(0, b.len()) == b;
+function startsWith(string, suffix) {
+    return string.len() >= suffix.len() && string.slice(0, suffix.len()) == suffix;
 }
 
 class MultipartItem {
@@ -430,86 +433,120 @@ class MultipartItem {
     }
 }
 
-function parseHeader(item, header) {
-    if (startsWith(header, FORM_DATA)) {
-        local params = header.slice(FORM_DATA.len());
-        local middle;
-        local offset = 0;
-        
-        while ((middle = params.find("=\"", offset)) != null) {
-            local key = params.slice(offset, middle);
-            middle += 2;
-            offset = params.find("\"", middle);
-            local value = params.slice(middle, offset);
-            offset++;
-            
-            // Remove semicolon and any whitespace.
-            key = key.slice(1);
-            key = strip(key);
-            
-            if (key == "name") {
-                item.name = value;
-            } else if (key == "filename") {
-                item.filename = value;
-            } else {
-                server.log("Error: unknown disposition parameter " + key + "=\"" + value + "\"");
-            }
-        }
-    } else if (startsWith(header, CONTENT_TYPE)) {
-        item.type = strip(header.slice(CONTENT_TYPE.len()));
-    } else {
-        server.log("Error: unknown header <" + header + ">");
+// If a param can take variable number of values, e.g. user can select multiple
+// files, then use getListParam to ensure you retrieve a list even if e.g. the
+// user only selected one file.
+class MultipartParams {
+    items = null;
+
+    constructor(_items) {
+        items = _items;
+    }
+
+    function hasParam(name) {
+        return name in items;
+    }
+
+    function getParam(name) {
+        local item = items[name];
+
+        return (typeof item != "array") ? item : item[0];
+    }
+
+    function getListParam(name) {
+        local item = items[name];
+
+        return (typeof item == "array") ? item : [ item ];
     }
 }
 
-function isMultipart(request) {
-    return ("content-type" in request.headers) &&
-        startsWith(request.headers["content-type"], "multipart");
-}
+// TODO: class has too many unnamed numeric literals.
+multipartParser <- class {
+    static FORM_DATA = "Content-Disposition: form-data";
+    static CONTENT_TYPE = "Content-Type:";
 
-function parseMultipart(req) {
-    local result = { };
-
-    local boundary = req.headers["content-type"];
-    boundary = boundary.slice(boundary.find("=") + 1);
-
-    local body = req.body;
-    local offset = body.find(boundary);
-    
-    if (offset == null) {
-        return { };
-    }
-
-    offset += boundary.len() + 2;
-    
-    local end;
-    
-    while ((end = body.find("\r\n--" + boundary, offset)) != null) {
-        local headerEnd = body.find("\r\n\r\n", offset);
-        local bodyStart = headerEnd + 4;
-        local header = body.slice(offset, headerEnd);
-        local item = MultipartItem();
-        
-        foreach (val in split(header, "\r\n")) {
-            parseHeader(item, val);
-        }
-        item.content = body.slice(bodyStart, end);
-        
-        if (item.name in result) {
-            // The same name is used multiple times, e.g. multiple file upload.
-            if (!(typeof result[item.name] == "array")) {
-                result[item.name] = [ result[item.name] ];
+    function parseHeader(item, header) {
+        if (startsWith(header, FORM_DATA)) {
+            local params = header.slice(FORM_DATA.len());
+            local middle;
+            local offset = 0;
+            
+            while ((middle = params.find("=\"", offset)) != null) {
+                local key = params.slice(offset, middle);
+                middle += 2;
+                offset = params.find("\"", middle);
+                local value = params.slice(middle, offset);
+                offset++;
+                
+                // Remove semicolon and any whitespace.
+                key = key.slice(1);
+                key = strip(key);
+                
+                if (key == "name") {
+                    item.name = value;
+                } else if (key == "filename") {
+                    item.filename = value;
+                } else {
+                    server.log("Error: unknown disposition parameter " + key + "=\"" + value + "\"");
+                }
             }
-            result[item.name].append(item);
+        } else if (startsWith(header, CONTENT_TYPE)) {
+            item.type = strip(header.slice(CONTENT_TYPE.len()));
         } else {
-            result[item.name] <- item;
+            server.log("Error: unknown header <" + header + ">");
         }
-
-        offset = end + 6 + boundary.len();
     }
 
-    return result;
-}
+    function isMultipart(request) {
+        return ("content-type" in request.headers) &&
+            startsWith(request.headers["content-type"], "multipart");
+    }
+
+    function getParams(request) {
+        local result = { };
+
+        local boundary = request.headers["content-type"];
+        boundary = boundary.slice(boundary.find("=") + 1);
+
+        local body = request.body;
+        local offset = body.find(boundary);
+        
+        if (offset == null) {
+            return MultipartParams({ });
+        }
+
+        offset += boundary.len() + 2;
+        
+        local end;
+        
+        while ((end = body.find("\r\n--" + boundary, offset)) != null) {
+            local headerEnd = body.find("\r\n\r\n", offset);
+            local bodyStart = headerEnd + 4;
+            local headers = body.slice(offset, headerEnd);
+            local item = MultipartItem();
+            
+            foreach (header in split(headers, "\r\n")) {
+                parseHeader(item, header);
+            }
+            item.content = body.slice(bodyStart, end);
+            
+            if (item.name in result) {
+                // The same name is used multiple times, e.g. multiple file upload.
+                if (!(typeof result[item.name] == "array")) {
+                    result[item.name] = [ result[item.name] ];
+                }
+                result[item.name].append(item);
+            } else {
+                result[item.name] <- item;
+            }
+
+            offset = end + 6 + boundary.len();
+        }
+
+        return MultipartParams(result);
+    }
+}();
 // -----------------------------------------------------------------------------
 // End - Multipart form data library
 // -----------------------------------------------------------------------------
+server.log("agent ready");
