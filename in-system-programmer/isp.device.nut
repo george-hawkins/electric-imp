@@ -31,7 +31,7 @@ function handleActionSendImpl(data) {
             data.lockBits <- programmer.getLockBits();
             break;
         case "setLockBits":
-            setLockBits(data);
+            programmer.setLockBits(data.lockBits);
             break;
         case "uploadHex":
             uploadHex(data);
@@ -66,6 +66,7 @@ function testHandleActionSendImpl(data) {
     }
 }
 
+// Two degrees of indirection - handleActionSend is a variable.
 function dispatchActionSend(data) {
     handleActionSend(data);
 }
@@ -73,17 +74,11 @@ function dispatchActionSend(data) {
 agent.on("actionSend", dispatchActionSend);
 
 function setFuses(data) {
-    local lfuse = data.lfuse;
-    local hfuse = data.hfuse;
-    local efuse = data.efuse;
-    
-    programmer.setFuses(lfuse, hfuse, efuse);
-}
-
-function setLockBits(data) {
-    local lockBits = data.lockBits;
-    
-    programmer.setLockBits(lockBits);
+    programmer.setFuses(
+        data.lfuse,
+        data.hfuse,
+        data.efuse,
+        data.unsafe);
 }
 
 function uploadHex(data) {
@@ -172,10 +167,10 @@ class InSystemProgrammer {
         });
     }
     
-    function setFuses(lfuse, hfuse, efuse) {
+    function setFuses(lfuse, hfuse, efuse, unsafe) {
         run(function() {
-            fuses.setLfuse(lfuse, false);
-            fuses.setHfuse(hfuse, false);
+            fuses.setLfuse(lfuse, unsafe);
+            fuses.setHfuse(hfuse, unsafe);
             fuses.setEfuse(efuse);
         });
     }
@@ -376,7 +371,7 @@ class Fuses {
     // Inspired by Nut's AvrTargetFusesWriteSafe.
     // http://sourceforge.net/p/ethernut/code/5726/tree/trunk/nut/dev/avrtarget.c
     // In contrast to Nut CKOUT is viewed as safe here and DWEN as dangerous (as it clearly disables ISP).
-    // These values only provide (some degree of safety) for ATmega and ATtiny AVRs.
+    // These values only provide (some degree of safety) for ATmega and ATtiny MCUs.
     // Other AVRs have different fuse bit assignments.
     static LFUSE_SAFE = 0xC0; // CKDIV8, CKOUT
     static HFUSE_SAFE = 0x1F; // WDTON, EESAVE, boot loader bits (ATmega), brown-out bits (ATtiny).
@@ -550,3 +545,5 @@ programmer <- InSystemProgrammer189(hardware.pin2);
 agent.on("ping", function(key) { agent.send("pong", key); });
 
 showMemory(); // Show free memory on completing startup.
+
+server.log("device ready");

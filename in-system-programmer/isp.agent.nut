@@ -40,6 +40,7 @@ function getSetFusesParams(request) {
         lfuse = getByteParam(request, "lfuse")
         hfuse = getByteParam(request, "hfuse")
         efuse = getByteParam(request, "efuse")
+        unsafe = "unsafe" in request.query
     };
 }
 
