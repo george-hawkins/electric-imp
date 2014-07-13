@@ -14,195 +14,38 @@
  * limitations under the License.
  */
 
+const SRC_BASE_URL = "https://george-hawkins.github.io/electric-imp/in-system-programmer/";
+
 const PROGRAMMER_PATH = "/programmer/";
-const NO_TRAILING_SLASH = "/programmer"; // Can't use method call, e.g. slice(...), with const.
+const NO_TRAILING_SLASH = "/programmer";
 const ACTION_PATH = "/programmer/action/";
+// Note: a const cannot be set to the result of a function call, e.g. slice(...).
 
-server.log("Programmer URL: " + http.agenturl() + PROGRAMMER_PATH);
+function requestHandler(request, response) {
+    try {
+        if (startsWith(request.path, ACTION_PATH)) {
+            local action = request.path.slice(ACTION_PATH.len());
 
-// Retrieve this URL to toggle test mode on or off.
-server.log("Test on/off URL: " + http.agenturl() + PROGRAMMER_PATH + "action/test");
-
-hexBytePattern <- regexp("0x[0-9a-fA-F][0-9a-fA-F]");
-
-function getByteParam(request, name) {
-    local s = request.query[name];
-    
-    if (!hexBytePattern.match(s)) {
-        throw name + " should be a hex byte of form \"0xXY\" but was \"" + s + "\"";
-    }
-    
-    return hexParser.getByte(s, 2);
-}
-
-function getSetFusesParams(request) {
-    return {
-        lfuse = getByteParam(request, "lfuse")
-        hfuse = getByteParam(request, "hfuse")
-        efuse = getByteParam(request, "efuse")
-        unsafe = "unsafe" in request.query
-    };
-}
-
-function getSetLockBitsParam(request) {
-    return {
-        lockBits = getByteParam(request, "lockBits")
-    };
-}
-
-const PARAM_HEX_FILE = "hexFile";
-
-function getUploadHexParam(request) {
-    local params = multipartParser.getParams(request);
-
-    if (!params.hasParam(PARAM_HEX_FILE)) {
-        throw "no HEX file was specified";
-    }
-
-    return {
-        hexData = intelHexReader.process(params.getParam(PARAM_HEX_FILE).content)
-    };
-}
-
-function getContent(url, headers = { }) {
-    local request = http.get(url, headers);
-    local response = request.sendsync();
-
-    if (response.statuscode != 200) {
-        throw response.statuscode + " - " + response.body;
-    }
-
-    return response.body;
-}
-
-// -----------------------------------------------------------------------------
-
-// TODO: move content from pages-dev to Programmer repo.
-const SRC_BASE_URL = "https://george-hawkins.github.io/pages-dev/";
-
-function getIndex() {
-    return getContent(SRC_BASE_URL + "index.html");
-}
-
-// -----------------------------------------------------------------------------
-
-const SIGNATURE_URL = "https://avrdude-conf.herokuapp.com/conf/parts/signatures/";
-ACCEPT_JSON <- { Accept = "application/json" }; // Only scalars can be consts.
-
-partCache <- { };
-
-function getPart(s) {
-    local key = format("0x%02x%02x%02x", s[0], s[1], s[2]);
-    local part;
-    
-    if (key in partCache) {
-        part = partCache[key];
-    } else {
-        local url = SIGNATURE_URL + format("0x%02x%02x%02x", s[0], s[1], s[2]);
-        
-        part = http.jsondecode(getContent(url, ACCEPT_JSON));
-        partCache[key] <- part;
-    }
-    
-    return part;
-}
-
-// -----------------------------------------------------------------------------
-
-class Context {
-    data = null
-    response = null
-    constructor(_action, _response, _data = {}) {
-        response = _response;
-        data = _data;
-        data.action <- _action;
-        data.timestamp <- time(); // Note: only to nearest second.
-    }
-
-    function handleReply(_data, success) {
-        data = _data;
-    
-        try {
-            (success ? handleSuccess : handleFailure)();
-        } catch (ex) {
-            sendException(response, ex, data);
+            handleAction(action, request, response);
+        } else if (request.path == PROGRAMMER_PATH) {
+            response.header("Content-Type", "text/html; charset=utf-8");
+            response.send(200, getContent(SRC_BASE_URL + "index.html"));
+        } else if (request.path == NO_TRAILING_SLASH || request.path == PROGRAMMER_PATH + "index.html") {
+            // Redirect to correct URL if trailing slash missing or index.html added.
+            response.header("Location", http.agenturl() + PROGRAMMER_PATH);
+            response.send(302, "");
+        } else if (startsWith(request.path, PROGRAMMER_PATH)) {
+            local subpath = request.path.slice(PROGRAMMER_PATH.len());
+            
+            response.header("Location", SRC_BASE_URL + subpath);
+            response.send(302, "");
         }
-    }
-    
-    function handleSuccess() {
-        sendResponse(200);
-    }
-
-    function handleFailure() {
-        sendResponse(500);
-    }
-
-    function sendResponse(code) {
-        sendJson(code, response, data);
+    } catch (ex) {
+        sendException(response, ex);
     }
 }
 
-const GET_SIGNATURE_ACTION = "getSignature";
-const UPLOAD_HEX_ACTION = "uploadHex";
-
-class SignatureContext extends Context {
-    function handleSuccess() {
-        data.description <- getPart(data.signature).desc;
-        base.handleSuccess();
-    }
-}
-
-// First we get the signature so we can request and submit the part with
-// the sending of the real upload context in the handleSuccess(...) logic.
-class UploadHexPartContext extends Context {
-    uploadHexData = null
-    constructor(_response, _data) {
-        base.constructor(GET_SIGNATURE_ACTION, _response);
-        uploadHexData = _data;
-    }
-    
-    function handleSuccess() {
-        uploadHexData.part <- getPart(data.signature);
-        send(Context(UPLOAD_HEX_ACTION, response, uploadHexData));
-    }
-}
-
-function onActionFailureReply(data) {
-    removeContext(data).handleReply(data, false);
-}
-
-function onActionSuccessReply(data) {
-    removeContext(data).handleReply(data, true);
-}
-
-
-device.on("actionSuccessReply", onActionSuccessReply);
-device.on("actionFailureReply", onActionFailureReply);
-
-function send(context) {
-    addContext(context);
-    sender.send("actionSend", context.data, function () {
-        local data = context.data;
-        data.message <- "device is not responding";
-        onActionFailureReply(data);
-    });
-}
-
-contextCache <- { };
-
-contextCacheKeyNext <- 0;
-
-function addContext(context) {
-    context.data.key <- contextCacheKeyNext++;
-    
-    contextCache[context.data.key] <- context;
-}
-
-function removeContext(data) {
-    return delete contextCache[delete data.key];
-}
-
-// -----------------------------------------------------------------------------
+http.onrequest(requestHandler);
 
 function handleAction(action, request, response) {
     try {
@@ -250,31 +93,192 @@ function sendException(response, ex, data = {}) {
         sendJson(500, response, data);
 }
 
-function requestHandler(request, response) {
-    try {
-        if (startsWith(request.path, ACTION_PATH)) {
-            local action = request.path.slice(ACTION_PATH.len());
+// -----------------------------------------------------------------------------
 
-            handleAction(action, request, response);
-        } else if (request.path == PROGRAMMER_PATH) {
-            response.header("Content-Type", "text/html; charset=utf-8");
-            response.send(200, getIndex());
-        } else if (request.path == NO_TRAILING_SLASH || request.path == PROGRAMMER_PATH + "index.html") {
-            // Redirect to correct URL if trailing slash missing or index.html added.
-            response.header("Location", http.agenturl() + PROGRAMMER_PATH);
-            response.send(302, "");
-        } else if (startsWith(request.path, PROGRAMMER_PATH)) {
-            local subpath = request.path.slice(PROGRAMMER_PATH.len());
-            
-            response.header("Location", SRC_BASE_URL + subpath);
-            response.send(302, "");
+// Retrieve this URL for the programmer's web interface.
+server.log("Programmer URL: " + http.agenturl() + PROGRAMMER_PATH);
+
+// Retrieve this URL to toggle test mode on or off.
+server.log("Test on/off URL: " + http.agenturl() + PROGRAMMER_PATH + "action/test");
+
+// ---------------------------------------------------------------------
+
+function getSetFusesParams(request) {
+    return {
+        lfuse = getByteParam(request, "lfuse")
+        hfuse = getByteParam(request, "hfuse")
+        efuse = getByteParam(request, "efuse")
+        unsafe = "unsafe" in request.query
+    };
+}
+
+function getSetLockBitsParam(request) {
+    return {
+        lockBits = getByteParam(request, "lockBits")
+    };
+}
+
+const PARAM_HEX_FILE = "hexFile";
+
+function getUploadHexParam(request) {
+    local params = multipartParser.getParams(request);
+
+    if (!params.hasParam(PARAM_HEX_FILE)) {
+        throw "no HEX file was specified";
+    }
+
+    return {
+        hexData = intelHexReader.process(params.getParam(PARAM_HEX_FILE).content)
+    };
+}
+
+// -----------------------------------------------------------------------------
+
+const GET_SIGNATURE_ACTION = "getSignature";
+const UPLOAD_HEX_ACTION = "uploadHex";
+
+class Context {
+    data = null;
+    response = null;
+
+    constructor(_action, _response, _data = {}) {
+        response = _response;
+        data = _data;
+        data.action <- _action;
+        data.timestamp <- time(); // Note: only to nearest second.
+    }
+
+    function handleReply(_data, success) {
+        data = _data;
+    
+        try {
+            // handleSuccess() and handleFailure() are broken out so subclasses
+            // can provide alternative implementations.
+            (success ? handleSuccess : handleFailure)();
+        } catch (ex) {
+            sendException(response, ex, data);
         }
-    } catch (ex) {
-        sendException(response, ex);
+    }
+    
+    function handleSuccess() {
+        sendResponse(200);
+    }
+
+    function handleFailure() {
+        sendResponse(500);
+    }
+
+    function sendResponse(code) {
+        sendJson(code, response, data);
     }
 }
 
-http.onrequest(requestHandler);
+class SignatureContext extends Context {
+    function handleSuccess() {
+        data.description <- partSource.get(data.signature).desc;
+        base.handleSuccess();
+    }
+}
+
+// First we get the signature so we can request and submit the part with
+// the sending of the real upload context in the handleSuccess(...) logic.
+class UploadHexPartContext extends Context {
+    uploadHexData = null;
+
+    constructor(_response, _data) {
+        base.constructor(GET_SIGNATURE_ACTION, _response);
+        uploadHexData = _data;
+    }
+    
+    function handleSuccess() {
+        uploadHexData.part <- partSource.get(data.signature);
+        send(Context(UPLOAD_HEX_ACTION, response, uploadHexData));
+    }
+}
+
+function send(context) {
+    contextCache.add(context);
+    sender.send("actionSend", context.data, function () {
+        context.data.message <- "device is not responding";
+        onActionFailureReply(context.data);
+    });
+}
+
+function onActionFailureReply(data) {
+    contextCache.remove(data).handleReply(data, false);
+}
+
+function onActionSuccessReply(data) {
+    contextCache.remove(data).handleReply(data, true);
+}
+
+device.on("actionSuccessReply", onActionSuccessReply);
+device.on("actionFailureReply", onActionFailureReply);
+
+contextCache <- class {
+    cache = { }
+    nextKey = 0;
+
+    function add(context) {
+        context.data.key <- nextKey++;
+        
+        cache[context.data.key] <- context;
+    }
+
+    function remove(data) {
+        return delete cache[delete data.key];
+    }
+}();
+
+// -----------------------------------------------------------------------------
+
+partSource <- class {
+    static SIGNATURE_URL = "https://avrdude-conf.herokuapp.com/conf/parts/signatures/";
+    static ACCEPT_JSON = { Accept = "application/json" };
+
+    cache = { };
+
+    function get(s) {
+        local key = format("0x%02x%02x%02x", s[0], s[1], s[2]);
+        local part;
+        
+        if (key in cache) {
+            part = cache[key];
+        } else {
+            local url = SIGNATURE_URL + format("0x%02x%02x%02x", s[0], s[1], s[2]);
+            
+            part = http.jsondecode(getContent(url, ACCEPT_JSON));
+            cache[key] <- part;
+        }
+        
+        return part;
+    }
+}();
+
+// ---------------------------------------------------------------------
+
+hexBytePattern <- regexp("0x[0-9a-fA-F][0-9a-fA-F]");
+
+function getByteParam(request, name) {
+    local s = request.query[name];
+    
+    if (!hexBytePattern.match(s)) {
+        throw name + " should be a hex byte of form \"0xXY\" but was \"" + s + "\"";
+    }
+    
+    return hexParser.getByte(s, 2);
+}
+
+function getContent(url, headers = { }) {
+    local request = http.get(url, headers);
+    local response = request.sendsync();
+
+    if (response.statuscode != 200) {
+        throw response.statuscode + " - " + response.body;
+    }
+
+    return response.body;
+}
 
 // -----------------------------------------------------------------------------
 // Start - Sender library
