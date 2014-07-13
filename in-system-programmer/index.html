@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <title>In-System Programmer</title>
+
+    <!-- Bootstrap core CSS -->
+    <link rel="stylesheet" href="//netdna.bootstrapcdn.com/bootstrap/3.1.1/css/bootstrap.min.css">
+
+    <!-- HTML5 shim and Respond.js IE8 support of HTML5 elements and media queries -->
+    <!--[if lt IE 9]>
+      <script src="https://oss.maxcdn.com/libs/html5shiv/3.7.0/html5shiv.js"></script>
+      <script src="https://oss.maxcdn.com/libs/respond.js/1.4.2/respond.min.js"></script>
+    <![endif]-->
+<style>
+/* Space out content a bit */
+body {
+  padding-top: 20px;
+  padding-bottom: 20px;
+}
+.wide-button {
+    min-width: 80px;
+}
+.vbottom {
+    vertical-align: bottom;
+}
+.inline-group {
+    /* Add to make a .form-group more like a .btn */
+    display: inline-block;
+    margin-bottom: 0;
+}
+.raise-8px {
+    /* Vertically center label relative to button even when vertical-align is bottom. */
+    position: relative;
+    top: -8px;
+}
+.jquery-hidden {
+    /* Bootstrap defines a .hidden which is different to JQuery's idea of hidden. */
+    display: none;
+}
+</style>
+  </head>
+
+  <body>
+
+    <div class="container">
+
+<div class="jumbotron">
+    <h1><nobr>In-System</nobr> Programmer<img src="//electricimp.com/public/img/logosmall.png" alt="[logo]"></h1>
+    <p>An Electric Imp based in-system programmer for Atmel AVR MCUs.</p>
+    <p>See the
+    <a href="https://github.com/george-hawkins/electric-imp/tree/master/in-system-programmer" target="_blank">in-system-programmer</a>
+    repository on GitHub for more details.</p>
+    <p><small>Rev. 0.17</small></p>
+</div>
+
+<div class="panel panel-default">
+    <div class="panel-heading">
+        <h3 class="panel-title">Signature</h3>
+    </div>
+    <div class="panel-body">
+        <p>Query the AVR MCU for the signature that distinguishes its type.</p>
+        <p>
+            <a id="signature-query" href="#" class="btn btn-primary wide-button">Query</a>
+            <span id="signature-result"><!-- signature result --></span>
+            <img id="signature-loading" class="jquery-hidden" src="ajax-loader.gif"> <!-- See http://stackoverflow.com/a/15013828/245602 -->
+            <span id="signature-success" class="jquery-hidden label label-success">Query succeeded</span>
+        </p>
+    </div>
+</div>
+
+<form id="upload-hex-form" action="action/uploadHex" method="POST">
+<div class="panel panel-default">
+    <div class="panel-heading">
+        <h3 class="panel-title">Sketch</h3>
+    </div>
+    <div class="panel-body">
+        <p>Program the AVR MCU with a HEX <!-- Intel capitalize HEX like this. --> file.</p>
+        <input id="hexFile" name="hexFile" type="file">
+        <p></p>
+        <a id="upload-hex-submit" href="#" class="btn btn-primary wide-button">Upload</a>
+        <img id="upload-hex-loading" class="jquery-hidden" src="ajax-loader.gif">
+        <span id="upload-hex-success" class="jquery-hidden label label-success">Programming succeeded</span>
+
+        <!--
+          For a visually more attractive file upload control see:
+          http://www.abeautifulsite.net/blog/2013/08/whipping-file-inputs-into-shape-with-bootstrap-3/
+        -->
+    </div>
+</div>
+</form>
+
+<form id="fuses-form" action="action/setFuses" method="GET">
+<div class="panel panel-default">
+    <div class="panel-heading">
+        <h3 class="panel-title">Fuses</h3>
+    </div>
+    <div class="panel-body">
+        <div class="alert alert-danger">
+            <b>Warning:</b> incorrectly setting the fuses may brick the MCU, making
+             it unrecoverable with anything other than a high voltage programmer.
+        </div>
+        <p>Query or set the the fuses of the AVR MCU.</p>
+        <div>
+            <a id="fuses-query" href="#" class="btn btn-primary wide-button vbottom">Query</a>
+
+            <!-- low, high, extended is the order used by http://www.engbedded.com/fusecalc -->
+            <div class="form-group vbottom inline-group">
+              <label class="control-label" for="lfuse">Low</label>
+              <input id="lfuse" name="lfuse" type="text" class="form-control" size="4" placeholder="0x00">
+            </div>
+            <div class="form-group vbottom inline-group">
+              <label class="control-label" for="hfuse">High</label>
+              <input id="hfuse" name="hfuse" type="text" class="form-control" size="4" placeholder="0x00">
+            </div>
+            <div class="form-group vbottom inline-group">
+              <label class="control-label" for="efuse">Ext</label>
+              <input id="efuse" name="efuse" type="text" class="form-control" size="4" placeholder="0x00">
+            </div>
+
+            <a id="fuses-set" href="#" class="btn btn-danger wide-button vbottom">Set</a>
+
+            <div class="checkbox vbottom inline-group raise-8px">
+              <label>
+                <input name="unsafe" type="checkbox">Allow unsafe changes
+              </label>
+            </div>
+
+            <img id="fuses-loading" class="jquery-hidden" src="ajax-loader.gif">
+            <span id="fuses-query-success" class="jquery-hidden label label-success raise-8px">Query succeeded</span>
+            <span id="fuses-set-success" class="jquery-hidden label label-success raise-8px">Set succeeded</span>
+        </div>
+
+        <p></p>
+    </div>
+</div>
+</form>
+
+<form id="lock-bits-form" action="action/setLockBits" method="GET">
+<div class="panel panel-default">
+    <div class="panel-heading">
+        <h3 class="panel-title">Lock Bits</h3>
+    </div>
+    <div class="panel-body">
+        <p>Query or set the lock bits of the AVR MCU.</p>
+        <div class="form-inline">
+            <a id="lock-bits-query" href="#" class="btn btn-primary wide-button">Query</a>
+
+            <input id="lockBits" name="lockBits" type="text" class="form-control" size="4" placeholder="0x00">
+
+            <a id="lock-bits-set" href="#" class="btn btn-danger wide-button">Set</a>
+            <img id="lock-bits-loading" class="jquery-hidden" src="ajax-loader.gif">
+            <span id="lock-bits-query-success" class="jquery-hidden label label-success">Query succeeded</span>
+            <span id="lock-bits-set-success" class="jquery-hidden label label-success">Set succeeded</span>
+        </div>
+    </div>
+</div>
+</form>
+
+    </div><!-- /.container -->
+
+    <footer class="bs-docs-footer">
+        <div class="container">
+            Copyright &copy; 2014 George C. Hawkins, Licensed under the
+                <a href="http://www.apache.org/licenses/LICENSE-2.0" target="_blank">Apache License, Version 2.0</a>.<br>
+             Electric Imp and the Electric Imp logo are trademarks of
+                <a href="http://electricimp.com/" target="_blank">Electric Imp, Inc</a>.
+        </div>
+    </footer>
+
+    <div id="error-modal" class="modal fade" tabindex="-1">
+      <div class="modal-dialog">
+        <div class="modal-content">
+
+          <div class="modal-header">
+            <button class="close" data-dismiss="modal">&times;</button>
+            <h4 class="modal-title">Error</h4>
+          </div>
+          <div class="modal-body">
+            <span id="error-message"><!-- error message --></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bootstrap core JavaScript
+    ================================================== -->
+    <!-- Placed at the end of the document so the pages load faster -->
+    <script src="//ajax.googleapis.com/ajax/libs/jquery/1.11.0/jquery.min.js"></script>
+    <script src="//netdna.bootstrapcdn.com/bootstrap/3.1.1/js/bootstrap.min.js"></script>
+
+    <!-- https://github.com/bestiejs/json3 - provide JSON or use browser default. -->
+    <script src="//cdnjs.cloudflare.com/ajax/libs/json3/3.3.1/json3.min.js"></script>
+
+    <!-- http://stackoverflow.com/a/4545089/245602 http://stackoverflow.com/a/1960245/245602 -->
+    <script src="//malsup.github.io/jquery.form.js"></script>
+
+    <script src="sprintf.min.js"></script>
+
+    <script>
+    (function ($) {
+
+        wireUpButton('#signature-query', '#signature-loading', '#signature-success', 'action/getSignature',
+            function (result) {
+                var s = sprintf("%s (0x%02x, 0x%02x, 0x%02x)",
+                    result.description, result.signature[0], result.signature[1], result.signature[2]);
+                $('#signature-result').text(s);
+            },
+            function () {
+                $('#signature-result').text(''); // Clear function only works on input elements.
+            }
+        );
+
+        wireUpForm('#upload-hex-submit', '#upload-hex-loading', '#upload-hex-form', '#upload-hex-success');
+
+        wireUpForm('#fuses-set', '#fuses-loading', '#fuses-form', '#fuses-set-success');
+
+        wireUpButton('#fuses-query', '#fuses-loading', '#fuses-query-success', 'action/getFuses',
+            function (result) {
+                $('#lfuse').val(hex(result.lfuse));
+                $('#hfuse').val(hex(result.hfuse));
+                $('#efuse').val(hex(result.efuse));
+            },
+            function () {
+                clear('#lfuse', '#hfuse', '#efuse');
+            }
+        );
+
+        wireUpForm('#lock-bits-set', '#lock-bits-loading', '#lock-bits-form', '#lock-bits-set-success');
+
+        wireUpButton('#lock-bits-query', '#lock-bits-loading', '#lock-bits-query-success', 'action/getLockBits',
+            function (result) {
+                $('#lockBits').val(hex(result.lockBits));
+            },
+            function () {
+                clear('#lockBits');
+            }
+        );
+
+        // TODO: validation on the client side would be more user friendly than, as currently, letting errors
+        // occur in the Imp/Agent logic and simply propagating the resulting failure messages back to the user.
+        // Note: the jQuery form plugin also includes validation related functionality - http://malsup.com/jquery/form/#validation
+
+        // -------------------------------------------------------------
+
+        function hex(i) {
+            return sprintf("0x%02x", i);
+        }
+
+        function clear() {
+            for(var i = 0; i < arguments.length; i++) {
+                $(arguments[i]).val('');
+            }
+        }
+
+        // http://stackoverflow.com/a/894877/245602
+        function defaultFor(arg, val) {
+            return typeof arg !== 'undefined' ? arg : val;
+        }
+
+        function wireUpForm(buttonId, loadingId, formId, successId, _success, error) {
+            // Lack of pre-IE9 support for Function.prototype.bind() forces use of lambda here.
+            wireUp(buttonId, loadingId, successId, _success, error, function (options) { $(formId).ajaxSubmit(options); });
+        }
+
+        function wireUpButton(buttonId, loadingId, successId, _url, _success, error) {
+            wireUp(buttonId, loadingId, successId, _success, error, $.ajax, { url: _url });
+        }
+
+        function wireUp(buttonId, loadingId, successId, _success, _error, ajaxFunction, options) {
+            $(buttonId).click(function (e) {
+                e.preventDefault();
+                $(loadingId).show();
+                ajaxFunction($.extend({
+                    dataType: 'json',
+                    success: createSuccessHandler(loadingId, successId, _success),
+                    error: createErrorHandler(loadingId, _error),
+                    timeout: 300000 // 5 minutes.
+                }, options));
+            });
+            // If the timeout property is not set the call waits indefinitely. However the agent server seems to
+            // close unused connections after 8 minutes - which results in an empty response rather than a timeout.
+        }
+
+        function createSuccessHandler(loadingId, successId, success) {
+            return function (result) {
+                $(loadingId).hide();
+                defaultFor(success, $.noop)(result);
+                $(successId).show().delay(4000).fadeOut('slow');
+            };
+        }
+
+        function createErrorHandler(loadingId, error) {
+            return function (xhr) {
+                $(loadingId).hide();
+                defaultFor(error, $.noop)();
+                showHtmlError(getErrorMessage(xhr));
+            };
+        }
+
+        // Create unconnected <div> element for utility use.
+        // http://api.jquery.com/jQuery/#creating-new-elements
+        var DIV_ELEM = $('<div/>');
+
+        function htmlEscape(s) {
+            // http://stackoverflow.com/a/374176/245602
+            return DIV_ELEM.text(s).html();
+        }
+
+        function getErrorMessage(xhr) {
+            // A nice JSON bundled error sent by the application or something more fundamental...
+            if (xhr['responseJSON'] && xhr.responseJSON['message']) {
+                return htmlEscape(xhr.responseJSON.message);
+            } else {
+                return 'The action failed. The IDE device log may contain some clues.<br>' + htmlEscape(JSON.stringify(xhr));
+            }
+        }
+
+        function showHtmlError(message) {
+            // If you use .text(...) rather than .html(...) then jQuery will HTML escape the text for you.
+            $('#error-message').html(message);
+            $('#error-modal').modal('show');
+        }
+
+    })(jQuery);
+    </script>
+
+  </body>
+</html>
