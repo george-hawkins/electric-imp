@@ -21,6 +21,9 @@ const NO_TRAILING_SLASH = "/programmer";
 const ACTION_PATH = "/programmer/action/";
 // Note: a const cannot be set to the result of a function call, e.g. slice(...).
 
+const GET_SIGNATURE_ACTION = "getSignature";
+const UPLOAD_HEX_ACTION = "uploadHex";
+
 function requestHandler(request, response) {
     try {
         if (startsWith(request.path, ACTION_PATH)) {
@@ -133,9 +136,6 @@ function getUploadHexParam(request) {
 }
 
 // -----------------------------------------------------------------------------
-
-const GET_SIGNATURE_ACTION = "getSignature";
-const UPLOAD_HEX_ACTION = "uploadHex";
 
 class Context {
     data = null;
