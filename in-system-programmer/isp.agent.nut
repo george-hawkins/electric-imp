@@ -36,7 +36,7 @@ function requestHandler(request, response) {
             response.send(302, "");
         } else if (startsWith(request.path, PROGRAMMER_PATH)) {
             local subpath = request.path.slice(PROGRAMMER_PATH.len());
-            
+
             response.header("Location", SRC_BASE_URL + subpath);
             response.send(302, "");
         }
@@ -67,7 +67,7 @@ function handleAction(action, request, response) {
         default:
             context = Context(action, response);
             break;
-        }        
+        }
 
         send(context);
     } catch (ex) {
@@ -77,7 +77,7 @@ function handleAction(action, request, response) {
 
 function sendJson(code, response, data) {
     local content = http.jsonencode(data);
-    
+
     try {
         response.header("Content-Type", "application/json");
         response.send(code, content);
@@ -89,7 +89,7 @@ function sendJson(code, response, data) {
 function sendException(response, ex, data = {}) {
         // You can throw null.
         data.message <- ex != null ? ex.tostring() : "null exception";
-    
+
         sendJson(500, response, data);
 }
 
@@ -150,7 +150,7 @@ class Context {
 
     function handleReply(_data, success) {
         data = _data;
-    
+
         try {
             // handleSuccess() and handleFailure() are broken out so subclasses
             // can provide alternative implementations.
@@ -159,7 +159,7 @@ class Context {
             sendException(response, ex, data);
         }
     }
-    
+
     function handleSuccess() {
         sendResponse(200);
     }
@@ -189,7 +189,7 @@ class UploadHexPartContext extends Context {
         base.constructor(GET_SIGNATURE_ACTION, _response);
         uploadHexData = _data;
     }
-    
+
     function handleSuccess() {
         uploadHexData.part <- partSource.get(data.signature);
         send(Context(UPLOAD_HEX_ACTION, response, uploadHexData));
@@ -221,7 +221,7 @@ contextCache <- class {
 
     function add(context) {
         context.data.key <- nextKey++;
-        
+
         cache[context.data.key] <- context;
     }
 
@@ -241,16 +241,16 @@ partSource <- class {
     function get(s) {
         local key = format("0x%02x%02x%02x", s[0], s[1], s[2]);
         local part;
-        
+
         if (key in cache) {
             part = cache[key];
         } else {
             local url = SIGNATURE_URL + format("0x%02x%02x%02x", s[0], s[1], s[2]);
-            
+
             part = http.jsondecode(getContent(url, ACCEPT_JSON));
             cache[key] <- part;
         }
-        
+
         return part;
     }
 }();
@@ -261,11 +261,11 @@ hexBytePattern <- regexp("0x[0-9a-fA-F][0-9a-fA-F]");
 
 function getByteParam(request, name) {
     local s = request.query[name];
-    
+
     if (!hexBytePattern.match(s)) {
         throw name + " should be a hex byte of form \"0xXY\" but was \"" + s + "\"";
     }
-    
+
     return hexParser.getByte(s, 2);
 }
 
@@ -292,13 +292,13 @@ sender <- class {
     static TIMEOUT = 2; // 2s.
     cache = { };
     nextKey = -1;
-    
+
     constructor() {
         local self = this;
-        
+
         device.on("pong", function(key) { self.doSuccess(key); });
     }
-    
+
     function send(_name, _value, _failure) {
         local self = this;
         local key = nextKey++;
@@ -315,14 +315,14 @@ sender <- class {
     function doSuccess(key) {
         if (key in cache) {
             local data = delete cache[key];
-        
+
             device.send(data.name, data.value);
         } else {
             // The device responded eventually but not within the timout period.
             server.log("device responded too late");
         }
     }
-    
+
     function doFailure(key) {
         if (key in cache) {
             local data = delete cache[key];
@@ -360,45 +360,45 @@ intelHexReader <- class {
     function process(content) {
         local data = blob(0);
         local count = 0;
-        
+
         foreach (line in split(content, "\r\n")) {
             if (line.len() < 11) {
                 ignore(line);
                 continue;
             }
-            
+
             if (line[0] != ':') {
                 ignore(line);
                 continue;
             }
-            
+
             local len = hexParser.getByte(line, 1);
-            
+
             if (line.len() != (len * 2) + 11) {
                 ignore(line);
                 continue;
             }
-            
+
             local addr = hexParser.getByte(line, 3) << 8;
             addr += hexParser.getByte(line, 5);
             local type = hexParser.getByte(line, 7);
             local offset = 9;
-            
+
             local lineData = blob(len);
-            
+
             for (local i = 0; i < len; i++) {
                 lineData.writen(hexParser.getByte(line, offset), 'b');
                 offset += 2;
             }
-            
+
             // TODO: verify checksum.
             local checksum = hexParser.getByte(line, offset);
-            
+
             addLine(data, addr, type, lineData);
 
             count++;
         }
-        
+
         server.log("read " + count + " lines of hex");
 
         return data;
@@ -429,7 +429,7 @@ class MultipartItem {
     filename = null;
     type = null;
     content = null;
-    
+
     function _tostring() {
         return "[ " + (name != null ? "name=\"" + name + "\" " : "") +
             (filename != null ? "filename=\"" + filename + "\" " : "") +
@@ -475,18 +475,18 @@ multipartParser <- class {
             local params = header.slice(FORM_DATA.len());
             local middle;
             local offset = 0;
-            
+
             while ((middle = params.find("=\"", offset)) != null) {
                 local key = params.slice(offset, middle);
                 middle += 2;
                 offset = params.find("\"", middle);
                 local value = params.slice(middle, offset);
                 offset++;
-                
+
                 // Remove semicolon and any whitespace.
                 key = key.slice(1);
                 key = strip(key);
-                
+
                 if (key == "name") {
                     item.name = value;
                 } else if (key == "filename") {
@@ -515,26 +515,26 @@ multipartParser <- class {
 
         local body = request.body;
         local offset = body.find(boundary);
-        
+
         if (offset == null) {
             return MultipartParams({ });
         }
 
         offset += boundary.len() + 2;
-        
+
         local end;
-        
+
         while ((end = body.find("\r\n--" + boundary, offset)) != null) {
             local headerEnd = body.find("\r\n\r\n", offset);
             local bodyStart = headerEnd + 4;
             local headers = body.slice(offset, headerEnd);
             local item = MultipartItem();
-            
+
             foreach (header in split(headers, "\r\n")) {
                 parseHeader(item, header);
             }
             item.content = body.slice(bodyStart, end);
-            
+
             if (item.name in result) {
                 // The same name is used multiple times, e.g. multiple file upload.
                 if (!(typeof result[item.name] == "array")) {

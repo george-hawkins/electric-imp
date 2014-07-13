@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
- 
+
 // Handle all the actions sent by the agent.
 function handleActionSendImpl(data) {
     try {
@@ -83,7 +83,7 @@ function setFuses(data) {
 
 function uploadHex(data) {
     showMemory(); // Log how the HEX blob impacted memory.
-    
+
     // Unlike elsewhere the items, due to their size, are deleted in order
     // to avoid sending them back in the response.
     local hexData = HexData(delete data.part, delete data.hexData);
@@ -109,14 +109,14 @@ class InSystemProgrammer {
     static SPICLK = 250; // 250KHz - slow enough for even 1MHz processors.
 
     static READ_SIGNATURE = 0x30000000;
-    
+
     static READ_FLASH_LO = 0x20000000;
     static READ_FLASH_HI = 0x28000000;
     static WRITE_FLASH_LO = 0x40000000;
     static WRITE_FLASH_HI = 0x48000000;
-    
+
     static COMMIT_PAGE = 0x4C000000;
-    
+
     static CHIP_ERASE = 0xAC800000;
 
     static PROG_ENABLE = 0xAC530000;
@@ -126,27 +126,27 @@ class InSystemProgrammer {
 
     // Most actions take a few milliseconds so 1s is a generous retry timeout.
     static RETRY_TIMEOUT = 1000000;
-    
+
     spi = null;
     reset = null;
     fuses = null;
 
     constructor() {
         fuses = Fuses(this);
-        
+
         reset.configure(DIGITAL_OUT);
-        
+
         // Reset is held low during programming - so set it high initially to
         // leave chip to run as normal.
         reset.write(1);
-            
+
         // I've confirmed MSB_FIRST and CLOCK_IDLE_LOW are the values used by the Arduino programmer by
         // printing out SPCR and decoding it using http://avrbeginners.net/architecture/spi/spi.html
         local speed = spi.configure((MSB_FIRST | CLOCK_IDLE_LOW), SPICLK);
-        
+
         server.log("speed: " + speed + "KHz");
     }
-    
+
     function getSignature() {
         return run(function() {
             return [
@@ -156,7 +156,7 @@ class InSystemProgrammer {
             ];
         });
     }
-    
+
     function getFuses() {
         return run(function() {
             return {
@@ -166,7 +166,7 @@ class InSystemProgrammer {
             };
         });
     }
-    
+
     function setFuses(lfuse, hfuse, efuse, unsafe) {
         run(function() {
             fuses.setLfuse(lfuse, unsafe);
@@ -180,7 +180,7 @@ class InSystemProgrammer {
             return fuses.getLockBits();
         });
     }
-    
+
     function setLockBits(lockBits) {
         run(function() {
            fuses.setLockBits(lockBits);
@@ -208,12 +208,12 @@ class InSystemProgrammer {
         while ((line = hexData.readDataLine()) != null) {
             local wordAddr = line.addr >> 1;
             local data = line.data;
-            
+
             // We expect pairs of bytes, i.e. 16 bit words.
             if (data.len() % 2 != 0) {
                 throw format("line 0x04x does not end on a word boundary", line.addr);
             }
-            
+
             while (!data.eos()) {
                 verifyFlashByte(READ_FLASH_LO, wordAddr, data.readn('b'));
                 verifyFlashByte(READ_FLASH_HI, wordAddr, data.readn('b'));
@@ -221,37 +221,37 @@ class InSystemProgrammer {
             }
         }
     }
-    
+
     function verifyFlashByte(command, wordAddr, expected) {
         local actual = spiSend(addWordAddr(command, wordAddr));
-        
+
         if (actual != expected) {
             // IMPORTANT: the address shown in this exception is the *word* address.
             throw format("expected 0x%02x but found 0x%02x at word-address 0x%04x",
                 expected, actual, wordAddr)
         }
     }
-    
+
     function writeFlashPage(page) {
         local wordOffset = 0;
-        
+
         while (!page.data.eos()) {
             writeFlashByte(WRITE_FLASH_LO, wordOffset, page.data.readn('b'));
             writeFlashByte(WRITE_FLASH_HI, wordOffset, page.data.readn('b'));
             wordOffset++;
         }
-        
+
         commitPage(page.addr);
     }
-    
+
     function writeFlashByte(command, wordAddr, b) {
         spiSend(addWordAddr(command, wordAddr) | b);
     }
-    
+
     function commitPage(pageAddr) {
         // Note: if comparing with Adafruit and Nick Gammon - a mask is not needed
         // here as the passed in address is known to the be the start of a page.
-        
+
         local wordAddr = pageAddr >> 1;
         local command = addWordAddr(COMMIT_PAGE, wordAddr);
 
@@ -261,7 +261,7 @@ class InSystemProgrammer {
 
         pollUntilReady();
     }
-    
+
     function addWordAddr(command, wordAddr) {
         return command | (wordAddr << 8);
     }
@@ -272,25 +272,25 @@ class InSystemProgrammer {
         spiSend(CHIP_ERASE);
         pollUntilReady();
     }
-    
+
     function run(action) {
         startProgramming();
-        
+
         try {
             local result = action();
-    
+
             endProgramming();
-            
+
             return result;
         } catch (ex) {
             endProgramming();
-            
+
             throw ex;
         }
     }
-    
+
     function startProgramming() {
-        // Adafruit doesn't bother with retrying.        
+        // Adafruit doesn't bother with retrying.
         retry("start-promgramming", function () {
             imp.sleep(0.1); // 100ms
             // TODO: Nick Gammon and Adafruit put SCLK low at this point.
@@ -299,11 +299,11 @@ class InSystemProgrammer {
             imp.sleep(0.001); // 1ms
             reset.write(0);
             imp.sleep(0.025); // 25ms
-            
-            return spiSend(PROG_ENABLE, 0xff00) == PROG_ACK;
+
+            return spiSend(PROG_ENABLE, 0xFF00) == PROG_ACK;
         });
     }
-    
+
     function endProgramming() {
         reset.write(1);
     }
@@ -321,12 +321,12 @@ class InSystemProgrammer {
         local start = hardware.micros();
         local diff = -1;
         local success;
-        
+
         while (diff < RETRY_TIMEOUT && !(success = action())) {
             diff = hardware.micros() - start;
             count++;
         }
-        
+
         if (!success) {
             throw name + " did not succeed after " + count + " attempts";
         } else if (count > 1) {
@@ -335,12 +335,12 @@ class InSystemProgrammer {
         }
     }
 
-    function spiSend(i, mask = 0xff) {
+    function spiSend(i, mask = 0xFF) {
         local out = blob(4);
-        
+
         out.writen(i, 'i');
         out.swap4();
-        
+
         local result = spi.writeread(out);
 
         result.swap4();
@@ -353,7 +353,7 @@ class InSystemProgrammer189 extends InSystemProgrammer {
     constructor(_reset) {
         spi = hardware.spi189;
         reset = _reset;
-        
+
         base.constructor();
     }
 }
@@ -381,25 +381,25 @@ class Fuses {
     constructor(_parent) {
         parent = _parent;
     }
-    
+
     function getLfuse() { return parent.spiSend(READ_LFUSE); }
-    
+
     function getHfuse() { return parent.spiSend(READ_HFUSE); }
-    
+
     function getEfuse() { return parent.spiSend(READ_EFUSE); }
-    
+
     function getLockBits() { return parent.spiSend(READ_LOCKBITS); }
 
     function safe(name, newValue, oldValue, safeBits) {
         local unsafeBits = ~safeBits;
-        
+
         // If new value would change any unsafe bits...
         if ((newValue & unsafeBits) != (oldValue & unsafeBits))
             throw format("0x%02x would change unsafe bits of %s", newValue, name);
 
         return true;
     }
-    
+
     function setFuse(name, writeCmd, newValue, oldValue,
         allowUnsafe = false, safeBits = 0xFF) {
 
@@ -410,22 +410,22 @@ class Fuses {
             }
         }
     }
-    
+
     function setLfuse(value, allowUnsafe) {
         setFuse("lfuse", WRITE_LFUSE, value, getLfuse(), allowUnsafe, LFUSE_SAFE);
     }
-    
+
     function setHfuse(value, allowUnsafe) {
         setFuse("hfuse", WRITE_HFUSE, value, getHfuse(), allowUnsafe, HFUSE_SAFE);
     }
-    
+
     function setEfuse(value) {
         setFuse("efuse", WRITE_EFUSE, value, getEfuse());
     }
-    
+
     function setLockBits(value) {
         local oldValue = getLockBits();
-        
+
         if ((value & ~oldValue) != 0) {
             throw "programmed lock bits can only be reset with chip erase";
             // The simplest way to erase the chip is to upload an image.
@@ -472,9 +472,9 @@ class HexData {
                 data.seek(line.pos); // Undo line read.
                 break;
             }
-            
+
             local pageOffset = line.addr - pageAddr;
-            
+
             if (pageOffset + line.data.len() > page.len()) {
                 throw "HEX data overflows page boundary"
             }
@@ -482,7 +482,7 @@ class HexData {
             page.seek(pageOffset);
             page.writeblob(line.data);
         }
-        
+
         page.seek(0);
 
         return {
@@ -493,14 +493,14 @@ class HexData {
 
     function clearPage(page) {
         page.seek(0);
-        
+
         while (!page.eos()) {
-            page.writen(0xff, 'b');
+            page.writen(0xFF, 'b');
         }
-        
+
         page.seek(0);
     }
-    
+
     // Returns the start address of the page containing the given address.
     function getPageAddr(addr) {
         return addr & pageMask;
@@ -508,7 +508,7 @@ class HexData {
 
     function readDataLine() {
         local line;
-        
+
         while ((line = readLine()) != null) {
             if (line.type != TYPE_DATA) {
                 return null; // Ignore everything beyond the first non-data line.
@@ -516,7 +516,7 @@ class HexData {
                 break;
             }
         }
-        
+
         return line;
     }
 
@@ -527,7 +527,7 @@ class HexData {
 
         local len;
 
-        return { 
+        return {
             pos = data.tell()
             addr = data.readn('w')
             type = data.readn('b')
