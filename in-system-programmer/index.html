@@ -314,6 +314,8 @@ body {
             // A nice JSON bundled error sent by the application or something more fundamental...
             if (xhr['responseJSON'] && xhr.responseJSON['message']) {
                 return htmlEscape(xhr.responseJSON.message);
+            } else if (xhr.status == 404) {
+                return '404 - service not found.';
             } else {
                 return 'The action failed. The IDE device log may contain some clues.<br>' + htmlEscape(JSON.stringify(xhr));
             }
