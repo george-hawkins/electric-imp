@@ -315,7 +315,9 @@ body {
             if (xhr['responseJSON'] && xhr.responseJSON['message']) {
                 return htmlEscape(xhr.responseJSON.message);
             } else if (xhr.status == 404) {
-                return '404 - service not found.';
+                return '404 - agent not found.';
+            } else if (xhr.status == 501) {
+                return '501 - service does not support operation.';
             } else {
                 return 'The action failed. The IDE device log may contain some clues.<br>' + htmlEscape(JSON.stringify(xhr));
             }
