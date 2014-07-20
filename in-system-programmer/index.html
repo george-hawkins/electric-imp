@@ -210,7 +210,7 @@ body {
                 $('#signature-result').text(s);
             },
             function () {
-                $('#signature-result').text(''); // Clear function only works on input elements.
+                $('#signature-result').text(''); // The clear(...) function used elsewhere only works on input elements.
             }
         );
 
@@ -240,8 +240,8 @@ body {
             }
         );
 
-        // TODO: validation on the client side would be more user friendly than, as currently, letting errors
-        // occur in the Imp/Agent logic and simply propagating the resulting failure messages back to the user.
+        // TODO: validation on the client side might be more user friendly than, as currently, finding problems
+        // at the Imp/Agent level and propagating the resulting failure messages back to the user.
         // Note: the jQuery form plugin also includes validation related functionality - http://malsup.com/jquery/form/#validation
 
         // -------------------------------------------------------------
@@ -301,8 +301,7 @@ body {
             };
         }
 
-        // Create unconnected <div> element for utility use.
-        // http://api.jquery.com/jQuery/#creating-new-elements
+        // Create unconnected <div> element for utility use - http://api.jquery.com/jQuery/#creating-new-elements
         var DIV_ELEM = $('<div/>');
 
         function htmlEscape(s) {
@@ -319,7 +318,7 @@ body {
             } else if (xhr.status == 501) {
                 return '501 - service does not support operation.';
             } else {
-                return 'The action failed. The IDE device log may contain some clues.<br>' + htmlEscape(JSON.stringify(xhr));
+                return 'The action failed. The Electric Imp IDE log may contain some clues.<br>' + htmlEscape(JSON.stringify(xhr));
             }
         }
 
