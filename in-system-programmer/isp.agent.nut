@@ -245,10 +245,18 @@ partSource <- class {
         if (key in cache) {
             part = cache[key];
         } else {
-            local url = SIGNATURE_URL + format("0x%02x%02x%02x", s[0], s[1], s[2]);
+            local start = time();
+            local url =  format("%s0x%02x%02x%02x", SIGNATURE_URL, s[0], s[1], s[2]);
 
             part = http.jsondecode(getContent(url, ACCEPT_JSON));
             cache[key] <- part;
+
+            local diff = time() - start;
+            
+            if (diff > 0) {
+                // Log delay due to Heroku hobbyist tier warmup.
+                server.log("querying part took " + diff + "s");
+            }
         }
 
         return part;
