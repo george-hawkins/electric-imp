@@ -8,6 +8,12 @@ The files relating to the web interface are on a separate branch:
 
     $ git checkout gh-pages
 
+That branch has its own README.md which includes details of all the third party tools used to create the web interface.
+
 To return to the branch with the Squirrel code:
 
     $ git checkout master
+
+Copyright 2014 George C. Hawkins, licensed under the [Apache License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0).
+
+Electric Imp and the Electric Imp logo are trademarks of [Electric Imp, Inc](http://electricimp.com/).
