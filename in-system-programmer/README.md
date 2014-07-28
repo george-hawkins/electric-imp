@@ -2,7 +2,7 @@
 
 This repository contains the Squirrel code and web interface for an Electric Imp powered in-system programmer for Atmel AVR MCUs.
 
-For details on setting up and using the programmer see [this blog post on Depletion Region](XXX).
+For details on setting up and using the programmer see [this blog post on Depletion Region](http://depletionregion.blogspot.ch/2014/07/imp-powered-in-system-programmer.html#atmega328).
 
 The files relating to the web interface are on a separate branch:
 
